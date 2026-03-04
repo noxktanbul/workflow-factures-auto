@@ -9,6 +9,8 @@ import io
 # Configurer le chemin de tesseract (vu dans l'audit)
 pytesseract.pytesseract.tesseract_cmd = r'C:\Tesseract-OCR\tesseract.exe'
 
+DPI_HIGH = 300
+
 def extract_text_from_scanned_pdf(pdf_path):
     """Extrait le texte d'un PDF scanné via OCR avec Tesseract."""
     texts = []
@@ -17,7 +19,7 @@ def extract_text_from_scanned_pdf(pdf_path):
         print(f"  -> PDF avec {len(doc)} pages.")
         for page_num in range(len(doc)):
             page = doc.load_page(page_num)
-            pix = page.get_pixmap(dpi=300) # Rendu haute résolution
+            pix = page.get_pixmap(dpi=DPI_HIGH) # Rendu haute résolution
             img = Image.open(io.BytesIO(pix.tobytes()))
 
             # OCR en français

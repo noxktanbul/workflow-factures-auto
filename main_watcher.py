@@ -116,11 +116,17 @@ def check_duplicate(ws, num_facture):
     return False
 
 def inject_to_excel(data):
+    if not os.path.exists(EXCEL_FILE):
+        logging.error("Fichier Excel introuvable.")
+        return "ERROR"
+
     try:
         wb = load_workbook(EXCEL_FILE)
         ws = wb["Ventes_Factures"]
 
-        if check_duplicate(ws, data.get("num_facture")):
+        num_facture_val = data.get("num_facture")
+        if check_duplicate(ws, num_facture_val):
+            logging.warning(f"Facture {num_facture_val} déjà présente - ignorée.")
             wb.close()
             return "DUPLICATE"
 
@@ -133,12 +139,12 @@ def inject_to_excel(data):
 
         # N° Facture (col A), Client (B), Type (C=defaut B2B), Référence (D), Session (E)
         # Date Facture (F), Date Échéance (G), Montant TTC (H)
-        ws[f"A{target_row}"] = data["num_facture"]
-        ws[f"B{target_row}"] = data["client"]
+        ws[f"A{target_row}"] = num_facture_val
+        ws[f"B{target_row}"] = data.get("client", "")
         ws[f"C{target_row}"] = "B2B"  # Défaut
-        ws[f"E{target_row}"] = data["session"]
-        ws[f"F{target_row}"] = data["date_facture"]
-        ws[f"G{target_row}"] = data["date_echeance"]
+        ws[f"E{target_row}"] = data.get("session", "")
+        ws[f"F{target_row}"] = data.get("date_facture", "")
+        ws[f"G{target_row}"] = data.get("date_echeance", "")
 
         # Casting montant to float
         if data["montant_ttc"]:
@@ -177,25 +183,25 @@ def log_to_json(filepath, data, score, status):
         "user": os.getlogin()
     }
     try:
-        logs = []
+        logs_list = []
         if os.path.exists(log_file):
             with open(log_file, "r", encoding="utf-8") as f:
-                try: logs = json.load(f)
-                except ValueError: logs = []
-        logs.append(entry)
+                try: logs_list = json.load(f)
+                except ValueError: logs_list = []
+        logs_list.append(entry)
         with open(log_file, "w", encoding="utf-8") as f:
-            json.dump(logs, f, indent=4, ensure_ascii=False)
+            json.dump(logs_list, f, indent=4, ensure_ascii=False)
     except Exception as e:
         logging.error(f"Erreur ecriture log JSON : {e}")
 
 def calculate_confidence(data):
-    score = 10
-    if not data.get("num_facture"): score -= 3
-    if not data.get("client"): score -= 2
-    if not data.get("date_facture"): score -= 2
-    if not data.get("date_echeance"): score -= 2
-    if not data.get("montant_ttc"): score -= 3
-    return max(0, score)
+    conf_score = 10
+    if not data.get("num_facture"): conf_score -= 3
+    if not data.get("client"): conf_score -= 2
+    if not data.get("date_facture"): conf_score -= 2
+    if not data.get("date_echeance"): conf_score -= 2
+    if not data.get("montant_ttc"): conf_score -= 3
+    return max(0, conf_score)
 
 def process_pdf(filepath):
     filename = os.path.basename(filepath)
@@ -239,8 +245,8 @@ def process_pdf(filepath):
         logging.error(f"Erreur globale sur {filename} : {e}")
         try:
             shutil.move(filepath, os.path.join(FOLDER_ERR, filename))
-        except Exception:
-             pass
+        except Exception as move_err:
+             logging.error(f"Failed to move file to error folder: {move_err}")
 
 def start_watcher():
     logging.info(f"Démarrage surveillance sur {FOLDER_IN}")

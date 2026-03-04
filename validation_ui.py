@@ -62,8 +62,8 @@ def extract_text_and_first_page_image(pdf_path):
     finally:
         try:
             doc.close()
-        except Exception:
-            pass
+        except Exception as close_err:
+            logging.warning(f"Failed to close doc: {close_err}")
         full_text = "\n".join(texts) + "\n" if texts else ""
     return full_text, first_page_img
 
@@ -100,7 +100,7 @@ def parse_invoice_text(text):
             try:
                 clean_amounts = [float(a.replace(' ', '').replace(',', '.')) for a in amounts]
                 data["montant_ttc"] = f"{max(clean_amounts):.2f}".replace('.', ',')
-            except:
+            except ValueError:
                 data["montant_ttc"] = amounts[-1].replace(' ', '').strip()
 
     return data
@@ -115,33 +115,36 @@ def check_duplicate(ws, num_facture):
     return False
 
 def inject_to_excel(data):
+    if not os.path.exists(EXCEL_FILE):
+        return False
+
     try:
         wb = load_workbook(EXCEL_FILE)
-        ws = wb["Ventes_Factures"]
+        ws = wb.active
 
         if check_duplicate(ws, data.get("num_facture")):
             wb.close()
             return "DUPLICATE"
 
-        target_row = ws.max_row + 1
+        found_row = ws.max_row + 1
         for r in range(2, ws.max_row + 2):
             if not ws[f"A{r}"].value:
-                target_row = r
+                found_row = r
                 break
 
-        ws[f"A{target_row}"] = data["num_facture"]
-        ws[f"B{target_row}"] = data["client"]
-        ws[f"C{target_row}"] = "B2B"
-        ws[f"E{target_row}"] = data["session"]
-        ws[f"F{target_row}"] = data["date_facture"]
-        ws[f"G{target_row}"] = data["date_echeance"]
+        ws[f"A{found_row}"] = data["num_facture"]
+        ws[f"B{found_row}"] = data["client"]
+        ws[f"C{found_row}"] = "B2B"
+        ws[f"E{found_row}"] = data["session"]
+        ws[f"F{found_row}"] = data["date_facture"]
+        ws[f"G{found_row}"] = data["date_echeance"]
 
         if data["montant_ttc"]:
             try:
                 mnt = float(data["montant_ttc"].replace(',', '.'))
-                ws[f"H{target_row}"] = mnt
+                ws[f"H{found_row}"] = mnt
             except ValueError:
-                ws[f"H{target_row}"] = data["montant_ttc"]
+                ws[f"H{found_row}"] = data["montant_ttc"]
 
         wb.save(EXCEL_FILE)
         wb.close()
@@ -151,44 +154,43 @@ def inject_to_excel(data):
         return "ERROR"
 
 class ValidationUI:
-    def __init__(self, root, pdf_path, extracted_data, img_preview):
-        self.root = root
+    def __init__(self, root_window, pdf_path, extracted_data, img_preview):
+        self.root = root_window
         self.root.title("Validation Facture - Google Antigravity")
         self.root.geometry(f"{WIN_WIDTH}x{WIN_HEIGHT}")
 
         self.pdf_path = pdf_path
         self.data = extracted_data
         self.img_preview = img_preview
-        self.result = False
+        self.status = "CANCEL" # Par défaut
         self.final_data = {}
 
         self.setup_ui()
 
     def setup_ui(self):
-        # Left frame: Image preview
-        left_frame = tk.Frame(self.root, width=500, bg="gray")
-        left_frame.pack(side=tk.LEFT, fill=tk.BOTH, expand=True)
+        # --- Panel Gauche (Image) ---
+        self.left_panel = tk.Frame(self.root, width=500, bg="gray")
+        self.left_panel.pack(side=tk.LEFT, fill=tk.BOTH, expand=True)
 
         if self.img_preview:
             # Resize image to fit height
-            img_w, img_h = self.img_preview.size
-            ratio = 650 / img_h
-            new_size = (int(img_w * ratio), 650)
+            h_ratio = WIN_HEIGHT / self.img_preview.height
+            new_size = (int(self.img_preview.width * h_ratio), WIN_HEIGHT)
             img_resized = self.img_preview.resize(new_size, Image.LANCZOS)
             self.tk_img = ImageTk.PhotoImage(img_resized)
 
-            lbl_img = tk.Label(left_frame, image=self.tk_img)
+            lbl_img = tk.Label(self.left_panel, image=self.tk_img)
             lbl_img.pack(padx=10, pady=10)
 
-        # Right frame: Form
-        right_frame = tk.Frame(self.root, width=400, padx=20, pady=20)
-        right_frame.pack(side=tk.RIGHT, fill=tk.Y)
+        # --- Panel Droit (Formulaire) ---
+        self.right_panel = tk.Frame(self.root, width=400, padx=20, pady=20)
+        self.right_panel.pack(side=tk.RIGHT, fill=tk.Y)
 
-        tk.Label(right_frame, text="Vérification des Données", font=("Arial", 16, "bold")).pack(pady=20)
+        tk.Label(self.right_panel, text="Vérification des Données", font=("Arial", 16, "bold")).pack(pady=20)
 
         self.entries = {}
         fields = [
-            ("Numéro Facture", "num_facture"),
+            ("N° Facture", "num_facture"),
             ("Client", "client"),
             ("Date Facture", "date_facture"),
             ("Date Échéance", "date_echeance"),
@@ -197,7 +199,7 @@ class ValidationUI:
         ]
 
         for label_text, key in fields:
-            frame = tk.Frame(right_frame)
+            frame = tk.Frame(self.right_panel)
             frame.pack(fill=tk.X, pady=5)
 
             lbl = tk.Label(frame, text=label_text, width=15, anchor="w")
@@ -213,7 +215,7 @@ class ValidationUI:
 
             self.entries[key] = ent_var
 
-        btn_frame = tk.Frame(right_frame)
+        btn_frame = tk.Frame(self.right_panel)
         btn_frame.pack(fill=tk.X, pady=40)
 
         tk.Button(btn_frame, text="Valider & Injecter", command=self.on_validate, bg="lightgreen", height=2).pack(side=tk.LEFT, expand=True, fill=tk.X, padx=5)
@@ -221,30 +223,32 @@ class ValidationUI:
 
     def on_validate(self):
         self.final_data = {key: var.get() for key, var in self.entries.items()}
-        self.result = True
+        self.status = "SUCCESS"
         self.root.destroy()
 
     def on_reject(self):
-        self.result = False
+        self.status = "REJECT"
         self.root.destroy()
 
 def process_with_ui(pdf_path):
-    print(f"Demarrage OCR pour UI: {pdf_path}")
-    text, first_page_img = extract_text_and_first_page_image(pdf_path)
+    print(f"Lancement de l'UI pour: {os.path.basename(pdf_path)}")
+    text, extracted_img = extract_text_and_first_page_image(pdf_path)
     data = parse_invoice_text(text)
 
-    # Lancement de l'UI
-    root = tk.Tk()
-    app = ValidationUI(root, pdf_path, data, first_page_img)
-    root.mainloop()
-
+    # Bloquant jusqu'à la fermeture de la fenêtre
+    root_val = tk.Tk()
+    app = ValidationUI(root_val, pdf_path, data, extracted_img)
+    root_val.mainloop()
+    
+    status = app.status
+    final_data = app.final_data
     # After UI is closed, wait a tiny bit to ensure resources free up
     time.sleep(0.5)
 
     out_path = os.path.join(FOLDER_OUT, os.path.basename(pdf_path))
     err_path = os.path.join(FOLDER_ERR, os.path.basename(pdf_path))
 
-    if app.result:
+    if status == "SUCCESS":
         print("Validation manuelle confirmée.")
         status = inject_to_excel(app.final_data)
         if status == "SUCCESS":
@@ -270,8 +274,8 @@ def process_with_ui(pdf_path):
         print("Rejet par l'utilisateur.")
         try:
              shutil.move(os.path.abspath(pdf_path), os.path.abspath(err_path))
-        except Exception:
-             pass
+        except Exception as move_err:
+             print(f"Failed to move rejected file: {move_err}")
 
 if __name__ == "__main__":
     import sys
