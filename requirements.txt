@@ -1,0 +1,6 @@
+watchdog
+PyMuPDF
+pytesseract
+Pillow
+openpyxl
+win10toast
