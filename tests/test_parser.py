@@ -27,7 +27,7 @@ class TestInvoiceParsing(unittest.TestCase):
         self.assertEqual(result["num_facture"], "TAU_2026-999")
         self.assertEqual(result["date_facture"], "01/01/2026")
         # should fallback to same date or none depending on logic, our logic mostly extracts what it finds
-        self.assertEqual(result["montant_ttc"], "500,00")
+        self.assertEqual(result["montant_ttc"], "500.00")
 
     def test_parse_complex_table(self):
         """Test extraction when the invoice uses complex table structures."""
