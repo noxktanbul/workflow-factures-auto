@@ -11,7 +11,7 @@ pytesseract.pytesseract.tesseract_cmd = r'C:\Tesseract-OCR\tesseract.exe'
 
 def extract_text_from_scanned_pdf(pdf_path):
     """Extrait le texte d'un PDF scanné via OCR avec Tesseract."""
-    full_text = ""
+    texts = []
     try:
         doc = fitz.open(pdf_path)
         print(f"  -> PDF avec {len(doc)} pages.")
@@ -22,8 +22,9 @@ def extract_text_from_scanned_pdf(pdf_path):
             
             # OCR en français
             text = pytesseract.image_to_string(img, lang='fra')
-            full_text += text + "\n"
+            texts.append(text)
         doc.close()
+        full_text = "\n".join(texts) + "\n" if texts else ""
     except Exception as e:
         print(f"Erreur OCR sur {pdf_path}: {e}")
     return full_text
@@ -42,8 +43,10 @@ def parse_invoice_text(text):
     # Numéro de facture
     m_facture = re.search(r'(?i)facture\s*n[°º]?\s*[:\-]?\s*([A-Z0-9\-]+)', text)
     if not m_facture:
-        m_facture = re.search(r'(?i)n[°º]\s*facture\s*[:\-]?\s*([A-Z0-9\-]+)', text)
-    if m_facture:
+        m_facture_alt = re.search(r'(?i)n[°º]\s*facture\s*[:\-]?\s*([A-Z0-9\-]+)', text)
+        if m_facture_alt:
+            data["num_facture"] = m_facture_alt.group(1).strip()
+    else:
         data["num_facture"] = m_facture.group(1).strip()
         
     # Date

@@ -47,7 +47,7 @@ def preprocess_image(img):
     return img
 
 def extract_text_from_scanned_pdf(pdf_path):
-    full_text = ""
+    texts = []
     try:
         doc = fitz.open(pdf_path)
         # Check maximum 3 pages to find data, avoiding 35-page OCRs for nothing
@@ -55,11 +55,12 @@ def extract_text_from_scanned_pdf(pdf_path):
         for page_num in range(max_pages):
             page = doc.load_page(page_num)
             pix = page.get_pixmap(dpi=300)
-            img = Image.open(io.BytesIO(pix.tobytes()))
-            img = preprocess_image(img)
-            text = pytesseract.image_to_string(img, lang='fra')
-            full_text += text + "\n"
+            pil_img = Image.open(io.BytesIO(pix.tobytes()))
+            img_processed = preprocess_image(pil_img)
+            text = pytesseract.image_to_string(img_processed, lang='fra')
+            texts.append(text)
         doc.close()
+        full_text = "\n".join(texts) + "\n" if texts else ""
     except Exception as e:
         logging.error(f"Erreur OCR sur {pdf_path}: {e}")
     return full_text
@@ -97,7 +98,7 @@ def parse_invoice_text(text):
             try:
                 clean_amounts = [float(a.replace(' ', '').replace(',', '.')) for a in amounts]
                 data["montant_ttc"] = f"{max(clean_amounts):.2f}".replace('.', ',')
-            except:
+            except ValueError:
                 data["montant_ttc"] = amounts[-1].replace(' ', '').strip()
         
     return data
@@ -121,28 +122,28 @@ def inject_to_excel(data):
             return "DUPLICATE"
         
         # Trouver la première ligne vide
-        next_row = ws.max_row + 1
-        for row in range(2, ws.max_row + 2):
-            if not ws[f"A{row}"].value:
-                next_row = row
+        target_row = ws.max_row + 1
+        for r in range(2, ws.max_row + 2):
+            if not ws[f"A{r}"].value:
+                target_row = r
                 break
                 
         # N° Facture (col A), Client (B), Type (C=defaut B2B), Référence (D), Session (E)
         # Date Facture (F), Date Échéance (G), Montant TTC (H)
-        ws[f"A{next_row}"] = data["num_facture"]
-        ws[f"B{next_row}"] = data["client"]
-        ws[f"C{next_row}"] = "B2B"  # Défaut
-        ws[f"E{next_row}"] = data["session"]
-        ws[f"F{next_row}"] = data["date_facture"]
-        ws[f"G{next_row}"] = data["date_echeance"]
+        ws[f"A{target_row}"] = data["num_facture"]
+        ws[f"B{target_row}"] = data["client"]
+        ws[f"C{target_row}"] = "B2B"  # Défaut
+        ws[f"E{target_row}"] = data["session"]
+        ws[f"F{target_row}"] = data["date_facture"]
+        ws[f"G{target_row}"] = data["date_echeance"]
         
         # Casting montant to float
         if data["montant_ttc"]:
             try:
                 mnt = float(data["montant_ttc"].replace(',', '.'))
-                ws[f"H{next_row}"] = mnt
-            except:
-                ws[f"H{next_row}"] = data["montant_ttc"]
+                ws[f"H{target_row}"] = mnt
+            except ValueError:
+                ws[f"H{target_row}"] = data["montant_ttc"]
         
         wb.save(EXCEL_FILE)
         wb.close()
@@ -235,7 +236,7 @@ def process_pdf(filepath):
         logging.error(f"Erreur globale sur {filename} : {e}")
         try:
             shutil.move(filepath, os.path.join(FOLDER_ERR, filename))
-        except:
+        except Exception:
              pass
 
 def start_watcher():

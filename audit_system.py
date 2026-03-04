@@ -22,13 +22,13 @@ def check_tesseract():
     ]
     for p in paths:
         if os.path.exists(p):
-            version = run_command(f'"{p}" --version')
-            return {"installed": True, "path": p, "version": version.split('\n')[0] if version else "Unknown"}
+            ver_output = run_command(f'"{p}" --version')
+            return {"installed": True, "path": p, "version": ver_output.split('\n')[0] if ver_output else "Unknown"}
     
     # Try system PATH
-    version = run_command("tesseract --version")
-    if "tesseract" in version.lower():
-        return {"installed": True, "path": "in PATH", "version": version.split('\n')[0]}
+    ver_output = run_command("tesseract --version")
+    if "tesseract" in ver_output.lower():
+        return {"installed": True, "path": "in PATH", "version": ver_output.split('\n')[0]}
     
     return {"installed": False}
 
@@ -41,8 +41,8 @@ def check_ghostscript():
     for p in paths:
         found = glob.glob(p)
         if found:
-            version = run_command(f'"{found[0]}" --version')
-            return {"installed": True, "path": found[0], "version": version}
+            ver_output = run_command(f'"{found[0]}" --version')
+            return {"installed": True, "path": found[0], "version": ver_output}
     return {"installed": False}
 
 def check_poppler():

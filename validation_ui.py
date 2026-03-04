@@ -36,7 +36,7 @@ def preprocess_image(img):
     return img
 
 def extract_text_and_first_page_image(pdf_path):
-    full_text = ""
+    texts = []
     first_page_img = None
     doc = fitz.open(pdf_path)
     try:
@@ -44,18 +44,22 @@ def extract_text_and_first_page_image(pdf_path):
         for page_num in range(max_pages):
             page = doc.load_page(page_num)
             pix = page.get_pixmap(dpi=150) # lower DPI for UI preview
-            img = Image.open(io.BytesIO(pix.tobytes()))
+            pil_img = Image.open(io.BytesIO(pix.tobytes()))
             if page_num == 0:
-                first_page_img = img.copy()
+                first_page_img = pil_img.copy()
             
             # OCR is done on 300dpi internally usually, but 150dpi here for speed during UI
-            img_ocr = preprocess_image(img)
+            img_ocr = preprocess_image(pil_img)
             text = pytesseract.image_to_string(img_ocr, lang='fra')
-            full_text += text + "\n"
+            texts.append(text)
     except Exception as e:
         logging.error(f"Erreur OCR sur {pdf_path}: {e}")
     finally:
-        doc.close()
+        try:
+            doc.close()
+        except Exception:
+            pass
+        full_text = "\n".join(texts) + "\n" if texts else ""
     return full_text, first_page_img
 
 def parse_invoice_text(text):
@@ -114,25 +118,25 @@ def inject_to_excel(data):
             wb.close()
             return "DUPLICATE"
         
-        next_row = ws.max_row + 1
-        for row in range(2, ws.max_row + 2):
-            if not ws[f"A{row}"].value:
-                next_row = row
+        target_row = ws.max_row + 1
+        for r in range(2, ws.max_row + 2):
+            if not ws[f"A{r}"].value:
+                target_row = r
                 break
                 
-        ws[f"A{next_row}"] = data["num_facture"]
-        ws[f"B{next_row}"] = data["client"]
-        ws[f"C{next_row}"] = "B2B"  
-        ws[f"E{next_row}"] = data["session"]
-        ws[f"F{next_row}"] = data["date_facture"]
-        ws[f"G{next_row}"] = data["date_echeance"]
+        ws[f"A{target_row}"] = data["num_facture"]
+        ws[f"B{target_row}"] = data["client"]
+        ws[f"C{target_row}"] = "B2B"  
+        ws[f"E{target_row}"] = data["session"]
+        ws[f"F{target_row}"] = data["date_facture"]
+        ws[f"G{target_row}"] = data["date_echeance"]
         
         if data["montant_ttc"]:
             try:
                 mnt = float(data["montant_ttc"].replace(',', '.'))
-                ws[f"H{next_row}"] = mnt
-            except:
-                ws[f"H{next_row}"] = data["montant_ttc"]
+                ws[f"H{target_row}"] = mnt
+            except ValueError:
+                ws[f"H{target_row}"] = data["montant_ttc"]
         
         wb.save(EXCEL_FILE)
         wb.close()
@@ -261,7 +265,7 @@ def process_with_ui(pdf_path):
         print("Rejet par l'utilisateur.")
         try:
              shutil.move(os.path.abspath(pdf_path), os.path.abspath(err_path))
-        except:
+        except Exception:
              pass
 
 if __name__ == "__main__":
