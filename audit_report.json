@@ -1,0 +1,16 @@
+{
+    "os": "Windows-11-10.0.26200-SP0",
+    "python": "3.14.0 (tags/v3.14.0:ebf955d, Oct  7 2025, 10:15:03) [MSC v.1944 64 bit (AMD64)]",
+    "tesseract_ocr": {
+        "installed": true,
+        "path": "in PATH",
+        "version": "tesseract v5.5.0.20241111"
+    },
+    "ghostscript": {
+        "installed": false
+    },
+    "poppler": {
+        "installed": false
+    },
+    "z_drive_accessible": true
+}

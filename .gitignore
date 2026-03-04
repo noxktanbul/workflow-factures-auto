@@ -1,0 +1,20 @@
+# Python
+__pycache__/
+*.pyc
+
+# Excel temporaire
+~$*.xlsx
+~$*.xlsm
+
+# PDF entrants/sortants
+Entrant/*.pdf
+Traite/*.pdf
+Erreur/*.pdf
+!Entrant/.gitkeep
+!Traite/.gitkeep
+!Erreur/.gitkeep
+
+# PyInstaller
+build/
+dist/
+*.spec

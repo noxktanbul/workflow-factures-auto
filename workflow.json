@@ -1,0 +1,17 @@
+[
+    {
+        "timestamp": "2026-03-03T15:05:46.748195",
+        "file": "Factures ventes non réglées part.3.pdf",
+        "data_extracted": {
+            "num_facture": "TAU_2026-559",
+            "client": "",
+            "date_facture": "25/02/2026",
+            "date_echeance": "",
+            "montant_ttc": "450.00",
+            "session": "25/02/2026 au 25/02/2026"
+        },
+        "confidence_score": 6,
+        "status": "PASSED_TO_UI",
+        "user": "TAUROENTUM1"
+    }
+]
