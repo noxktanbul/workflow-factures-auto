@@ -2,7 +2,7 @@
 
 Bienvenue sur le dépôt du projet de **Workflow Automatisé de Traitement de Factures**. Ce projet utilise Python, Tesseract OCR et Regex pour lire, analyser et injecter intelligemment des factures PDF dans un fichier Excel partagé.
 
-> **Note :** Ce projet a bénéficié d'un audit de qualité de code garantissant d'excellentes performances et de bonnes pratiques (A+ Grade).
+> **Mise à jour (V4)** : Le système gère désormais nativement les **PDF Multi-Factures** (1 page = 1 facture), ignorant automatiquement les pages de type "convocation" ou "devis". Il intègre aussi une détection intelligente du contexte (Client en position inversée par rapport au `TAU_`) et renseigne dynamiquement le champ "Type" (`B2B`, `CPF`, `CDC`) de l'échéancier. (A+ Grade Code Quality).
 
 ## Documentation
 

@@ -27,13 +27,17 @@ Si c'est un scan papier, l'image peut être grise, floue ou un peu de travers. L
 - Transformer l'image en Noir & Blanc pur (pour faire ressortir le texte).
 - Augmenter artificiellement la netteté (le contraste).
 
-### Étape 3 : L'Extraction du Texte (OCR)
-Le code transmet cette belle image nettoyée à `Tesseract OCR` (un moteur Open Source créé par Google). Tesseract "lit" l'image et renvoie tout le texte trouvé, mot pour mot.
+### Étape 3 : L'Extraction du Texte (OCR) Multi-Pages
+Le code transmet cette belle image nettoyée à `Tesseract OCR` page par page.
+Si un PDF contient 30 pages, le système sait désormais parcourir chaque page pour identifier **individuellement** la présence d'une facture. Les pages non pertinentes (comme les convocations ou relevés d'heures) sont automatiquement ignorées si elles ne contiennent pas le mot « Facture » ET un code « TAU_ ».
 
-### Étape 4 : L'Analyse Intelligente (Les Regex)
-Comment le robot sait-il quel nombre est le montant et quel nombre est le code postal ?
-Le système utilise des **Expressions Régulières (Regex)**. Ce sont des "règles de recherche" ultra-précises.
-*Exemple de logique pour le montant : "Cherche les mots 'Total TTC' ou 'Net à payer', et prend les chiffres qui suivent juste après. Si ces mots n'existent pas, liste tous les montants de la page et sélectionne automatiquement le plus élevé".*
+### Étape 4 : L'Analyse Intelligente V4
+Comment le robot sait-il quel nombre est le montant et quel nom est le client ?
+Le système utilise des **Expressions Régulières (Regex)** combinées à une intelligence de structure de document :
+- **Le Montant :** Cherche « Total TTC » ou regarde tous les nombres avec une écriture ambiguë (ex: `1,500.00€`) partout sur la page, et sélectionne mathématiquement le plus gros net à payer.
+- **Le Client :** Plutôt que de chercher bêtement sous l'entête, le système remonte **depuis le code TAU_ vers le haut** pour isoler la première ligne propre de l'adresse (en évitant les noms de villes de la région PACA ou les mentions "Tél").
+- **Le Type :** Le système détecte la mention "Compte Personnel de Formation" pour remplir la colonne [Type] avec `CPF`, ou `CDC`, sinon `B2B` par défaut.
+- **Dates & Échéances :** L'échéance se calcule automatiquement (+1 mois net) en injectant de véritables dates Excel, formatées en JJ/MM/AAAA.
 
 ### Étape 5 : Le Système de Confiance (Le Score)
 Le bot est prudent. Il démarre avec une note de 10/10.
