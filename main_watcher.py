@@ -27,16 +27,19 @@ if getattr(sys, 'frozen', False):
 else:
     BASE_DIR = os.path.dirname(os.path.abspath(__file__))
 
+MAX_PAGES_TO_SCAN = 3
+DPI_HIGH = 300
+
 FOLDER_IN = os.path.join(BASE_DIR, "Entrant")
 FOLDER_OUT = os.path.join(BASE_DIR, "Traite")
 FOLDER_ERR = os.path.join(BASE_DIR, "Erreur")
 EXCEL_FILE = os.path.join(BASE_DIR, "References", "Echeancier_cible.xlsx")
 
 # Log config
-logging.basicConfig(filename=os.path.join(BASE_DIR, "workflow.log"), level=logging.INFO, 
+logging.basicConfig(filename=os.path.join(BASE_DIR, "workflow.log"), level=logging.INFO,
                     format='%(asctime)s - %(levelname)s - %(message)s')
 
-# Tesseract 
+# Tesseract
 pytesseract.pytesseract.tesseract_cmd = r'C:\Tesseract-OCR\tesseract.exe'
 
 def preprocess_image(img):
@@ -51,10 +54,10 @@ def extract_text_from_scanned_pdf(pdf_path):
     try:
         doc = fitz.open(pdf_path)
         # Check maximum 3 pages to find data, avoiding 35-page OCRs for nothing
-        max_pages = min(len(doc), 3)
+        max_pages = min(len(doc), MAX_PAGES_TO_SCAN)
         for page_num in range(max_pages):
             page = doc.load_page(page_num)
-            pix = page.get_pixmap(dpi=300)
+            pix = page.get_pixmap(dpi=DPI_HIGH)
             pil_img = Image.open(io.BytesIO(pix.tobytes()))
             img_processed = preprocess_image(pil_img)
             text = pytesseract.image_to_string(img_processed, lang='fra')
@@ -67,28 +70,28 @@ def extract_text_from_scanned_pdf(pdf_path):
 
 def parse_invoice_text(text):
     data = {"num_facture": "", "client": "", "date_facture": "", "date_echeance": "", "montant_ttc": "", "session": ""}
-    
+
     # TAU_2026-413
     m_facture = re.search(r'(?i)(TAU_\d{4}[\-\_]\d+)', text)
     if m_facture: data["num_facture"] = m_facture.group(1).strip()
-        
+
     all_dates = re.findall(r'(\d{2}[/.\-]\d{2}[/.\-]\d{4})', text)
     if all_dates:
         data["date_facture"] = all_dates[0]
-        
+
     m_echeance = re.search(r'(?i)(?:échéance|echeance|règlement|limite)\s*.*?(?:\d{2}[/.\-]\d{2}[/.\-]\d{4})', text)
     if m_echeance:
          dates = re.findall(r'(\d{2}[/.\-]\d{2}[/.\-]\d{4})', m_echeance.group(0))
          if dates: data["date_echeance"] = dates[-1]
     elif len(all_dates) > 1:
          data["date_echeance"] = all_dates[-1]
-             
+
     m_session = re.search(r'(?i)Session(?:\s*du)?\s*(\d{2}[/.\-]\d{2}[/.\-]\d{4}\s*au\s*\d{2}[/.\-]\d{2}[/.\-]\d{4})', text)
     if m_session: data["session"] = m_session.group(1).strip()
-    
+
     m_client = re.search(r'(?i)SOCIETE\s*([^\n\r]+)', text)
     if m_client: data["client"] = m_client.group(1).strip()
-             
+
     m_ttc_explicit = re.search(r'(?i)(?:Total\s*TTC|TTC|Net\s*à\s*payer).*?([\d\s]+[,.]\d{2})(?:\s*€|\s*EUR)?', text)
     if m_ttc_explicit:
         data["montant_ttc"] = m_ttc_explicit.group(1).replace(' ', '').strip()
@@ -100,7 +103,7 @@ def parse_invoice_text(text):
                 data["montant_ttc"] = f"{max(clean_amounts):.2f}".replace('.', ',')
             except ValueError:
                 data["montant_ttc"] = amounts[-1].replace(' ', '').strip()
-        
+
     return data
 
 def check_duplicate(ws, num_facture):
@@ -116,18 +119,18 @@ def inject_to_excel(data):
     try:
         wb = load_workbook(EXCEL_FILE)
         ws = wb["Ventes_Factures"]
-        
+
         if check_duplicate(ws, data.get("num_facture")):
             wb.close()
             return "DUPLICATE"
-        
+
         # Trouver la première ligne vide
         target_row = ws.max_row + 1
         for r in range(2, ws.max_row + 2):
             if not ws[f"A{r}"].value:
                 target_row = r
                 break
-                
+
         # N° Facture (col A), Client (B), Type (C=defaut B2B), Référence (D), Session (E)
         # Date Facture (F), Date Échéance (G), Montant TTC (H)
         ws[f"A{target_row}"] = data["num_facture"]
@@ -136,7 +139,7 @@ def inject_to_excel(data):
         ws[f"E{target_row}"] = data["session"]
         ws[f"F{target_row}"] = data["date_facture"]
         ws[f"G{target_row}"] = data["date_echeance"]
-        
+
         # Casting montant to float
         if data["montant_ttc"]:
             try:
@@ -144,7 +147,7 @@ def inject_to_excel(data):
                 ws[f"H{target_row}"] = mnt
             except ValueError:
                 ws[f"H{target_row}"] = data["montant_ttc"]
-        
+
         wb.save(EXCEL_FILE)
         wb.close()
         return "SUCCESS"
@@ -156,7 +159,7 @@ class InvoiceHandler(FileSystemEventHandler):
     def on_created(self, event):
         if event.is_directory:
              return
-             
+
         filepath = event.src_path
         if filepath.lower().endswith(".pdf"):
             logging.info(f"Nouveau fichier détecté : {filepath}")
@@ -200,21 +203,21 @@ def process_pdf(filepath):
         logging.info(f"Extraction du texte pour {filename}...")
         text = extract_text_from_scanned_pdf(filepath)
         data = parse_invoice_text(text)
-        
+
         score = calculate_confidence(data)
         logging.info(f"Données extraites : {data} (Score: {score}/10)")
-        
+
         if score < 7:
             logging.info(f"Score insuffisant. Lancement UI pour {filename}")
             if toaster: toaster.show_toast("Validation Requise", f"La facture {filename} nécessite une validation manuelle.", duration=5, threaded=True)
-            
+
             log_to_json(filepath, data, score, "PASSED_TO_UI")
             try:
                 process_with_ui(filepath)
             except Exception as e:
                 logging.error(f"Erreur UI dynamique : {e}")
             return
-        
+
         status = inject_to_excel(data)
         if status == "SUCCESS":
             logging.info(f"Injection Excel réussie pour {filename}")
@@ -231,7 +234,7 @@ def process_pdf(filepath):
             shutil.move(filepath, os.path.join(FOLDER_ERR, filename))
             log_to_json(filepath, data, score, "ERROR")
             if toaster: toaster.show_toast("Erreur Facture", f"Erreur d'injection pour {filename}.", duration=5, threaded=True)
-            
+
     except Exception as e:
         logging.error(f"Erreur globale sur {filename} : {e}")
         try:

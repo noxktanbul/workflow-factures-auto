@@ -3,13 +3,16 @@ import os
 import subprocess
 import sys
 import platform
+import shlex
 
 def run_command(command):
     try:
-        result = subprocess.run(command, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True, shell=True)
+        args = shlex.split(command)
+        result = subprocess.run(args, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True, shell=False)
         return result.stdout.strip()
     except Exception as e:
         return str(e)
+
 
 def check_python_version():
     return sys.version
@@ -24,12 +27,12 @@ def check_tesseract():
         if os.path.exists(p):
             ver_output = run_command(f'"{p}" --version')
             return {"installed": True, "path": p, "version": ver_output.split('\n')[0] if ver_output else "Unknown"}
-    
+
     # Try system PATH
     ver_output = run_command("tesseract --version")
     if "tesseract" in ver_output.lower():
         return {"installed": True, "path": "in PATH", "version": ver_output.split('\n')[0]}
-    
+
     return {"installed": False}
 
 def check_ghostscript():
@@ -70,7 +73,7 @@ def generate_report():
         "poppler": check_poppler(),
         "z_drive_accessible": check_z_drive()
     }
-    
+
     with open("audit_report.json", "w", encoding="utf-8") as f:
         json.dump(report, f, indent=4)
     print("Audit completed. Report saved to audit_report.json")

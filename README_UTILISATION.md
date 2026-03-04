@@ -20,7 +20,7 @@ Le système va lire la facture tout seul (via une intelligence artificielle de r
 - Le Montant
 
 ### Scénario A : La facture est parfaitement lisible (Cas le plus fréquent)
-Si le système est très sûr de ce qu'il a lu, il va **directement ajouter une nouvelle ligne dans votre fichier Excel** des échéances. 
+Si le système est très sûr de ce qu'il a lu, il va **directement ajouter une nouvelle ligne dans votre fichier Excel** des échéances.
 - Vous verrez passer une **notification Windows** (en bas à droite de l'écran) pour vous confirmer le succès de l'opération.
 - Le fichier PDF est automatiquement déplacé du dossier `Entrant` vers le dossier `Traite`.
 
