@@ -23,9 +23,38 @@ Destiné aux personnes qui vont utiliser l'application au quotidien. Il explique
 
 Le système peut être exécuté de deux façons :
 - **Mode développement :** Lancez `python main_watcher.py` pour démarrer la surveillance du dossier `Entrant/`.
-- **Mode production :** Compilez le projet avec PyInstaller et lancez l'exécutable généré.
+- **Mode production :** Compilez le projet avec PyInstaller et lancez l'exécutable généré, ou utilisez `launcher.bat` (redémarrage automatique en cas de crash).
 
-Déposez un fichier PDF dans le dossier `Entrant/`. S'il est reconnu, il sera traité automatiquement. S'il y a un doute, une interface utilisateur de validation s'ouvrira.
+Déposez un fichier PDF dans le dossier `Entrant/`. S'il est reconnu avec un score de confiance suffisant (≥ 7/10), il sera traité automatiquement. Sinon, une interface de validation s'ouvre.
+
+### Exemple : traitement d'une facture
+
+```
+Entrant/
+  └── TAU_2026-557.pdf   ← déposer ici
+
+Résultat automatique (score ≥ 7) :
+  → injecté dans Echeancier_cible.xlsx
+  → déplacé vers 2_Traite_Succes/
+
+Résultat avec validation (score < 7) :
+  → fenêtre de validation s'ouvre
+  → l'utilisateur corrige/confirme les champs
+  → injection puis déplacement vers 2_Traite_Succes/
+```
+
+### Exemple : configuration (`config.ini`)
+
+```ini
+[CHEMINS]
+BASE_DIR      = Z:\NZBG\échéanciers\Workflow factures ventes
+EXCEL_FILE    = Z:\NZBG\échéanciers\Echeancier_cible.xlsx
+TESSERACT_PATH = C:\Tesseract-OCR\tesseract.exe
+
+[PARAMETRES]
+SEUIL_CONFIANCE = 7
+MAX_ENTREES_LOG = 500
+```
 
 ## API
 

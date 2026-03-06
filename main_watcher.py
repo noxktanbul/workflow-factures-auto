@@ -41,11 +41,16 @@ TESS_PATH   = _cfg.get('CHEMINS', 'TESSERACT_PATH', fallback=r'C:\Tesseract-OCR\
 SEUIL       = _cfg.getint('PARAMETRES', 'SEUIL_CONFIANCE',  fallback=7)
 MAX_LOG     = _cfg.getint('PARAMETRES', 'MAX_ENTREES_LOG',   fallback=500)
 
+# Constantes d'extraction
+OCR_DPI          = 300   # résolution d'image pour Tesseract
+MAX_PDF_PAGES    = 3     # nombre max de pages analysées par facture
+MIN_NATIVE_CHARS = 50    # seuil en dessous duquel on bascule en OCR
+ECHEANCE_JOURS   = 30    # délai de paiement par défaut (J+30)
+
 FOLDER_IN   = os.path.join(BASE_DIR, _cfg.get('CHEMINS', 'FOLDER_ENTRANT', fallback='Entrant'))
 FOLDER_OUT  = os.path.join(BASE_DIR, _cfg.get('CHEMINS', 'FOLDER_TRAITE',  fallback='Traite'))
 FOLDER_ERR  = os.path.join(BASE_DIR, _cfg.get('CHEMINS', 'FOLDER_ERREUR',  fallback='Erreur'))
 
-# FIX LOG-01 : ajout encoding='utf-8'
 logging.basicConfig(
     filename=os.path.join(BASE_DIR, "workflow.log"),
     level=logging.INFO,
@@ -55,7 +60,7 @@ logging.basicConfig(
 
 pytesseract.pytesseract.tesseract_cmd = TESS_PATH
 
-# FIX BUG-02 : queue pour passer les tâches UI au thread principal
+# Tkinter doit s'exécuter dans le thread principal : les workers y envoient leurs tâches UI via cette queue
 ui_queue = queue.Queue()
 
 # ---------------------------------------------------------------------------
@@ -149,16 +154,16 @@ def extract_text_from_pdf(pdf_path):
     parts = []
     try:
         doc = fitz.open(pdf_path)
-        max_pages = min(len(doc), 3)
+        max_pages = min(len(doc), MAX_PDF_PAGES)
         for page_num in range(max_pages):
             page = doc.load_page(page_num)
             # Tentative extraction texte natif
             native = page.get_text("text").strip()
-            if native and len(native) > 50:
+            if native and len(native) > MIN_NATIVE_CHARS:
                 parts.append(native)
             else:
                 # Fallback OCR sur image
-                pix = page.get_pixmap(dpi=300)
+                pix = page.get_pixmap(dpi=OCR_DPI)
                 page_img = Image.open(io.BytesIO(pix.tobytes()))
                 page_img = preprocess_image(page_img)
                 ocr_text = pytesseract.image_to_string(page_img, lang='fra', config='--psm 6')
@@ -263,12 +268,12 @@ def parse_invoice_text(text):
     if data["is_avoir"] and data["montant_ttc"] and not str(data["montant_ttc"]).startswith("-"):
         data["montant_ttc"] = "-" + str(data["montant_ttc"])
 
-    # 6. Échéance J+30 par défaut
+    # Échéance par défaut si absente : date facture + ECHEANCE_JOURS
     data["_echeance_calculee"] = False
     if not data["date_echeance"] and data["date_facture"]:
         d = parse_date(data["date_facture"])
         if isinstance(d, datetime.datetime):
-            data["date_echeance"] = (d + datetime.timedelta(days=30)).strftime('%d/%m/%Y')
+            data["date_echeance"] = (d + datetime.timedelta(days=ECHEANCE_JOURS)).strftime('%d/%m/%Y')
             data["_echeance_calculee"] = True
 
     return data
@@ -312,7 +317,7 @@ def check_duplicate(ws, num_facture):
 # ---------------------------------------------------------------------------
 def inject_to_excel(data):
     try:
-        backup_excel()  # FIX ROBUST-01
+        backup_excel()
         wb = load_workbook(EXCEL_FILE)
         ws = wb["Ventes_Factures"]
 
@@ -328,10 +333,10 @@ def inject_to_excel(data):
 
         ws[f"A{next_row}"] = data.get("num_facture", "")
         ws[f"B{next_row}"] = data.get("client", "")
-        ws[f"C{next_row}"] = data.get("type_facture", "B2B")  # FIX FUNC-01
+        ws[f"C{next_row}"] = data.get("type_facture", "B2B")
         ws[f"E{next_row}"] = data.get("session", "")
-        ws[f"F{next_row}"] = parse_date(data.get("date_facture", ""))   # FIX FUNC-02
-        ws[f"G{next_row}"] = parse_date(data.get("date_echeance", ""))  # FIX FUNC-02
+        ws[f"F{next_row}"] = parse_date(data.get("date_facture", ""))
+        ws[f"G{next_row}"] = parse_date(data.get("date_echeance", ""))
 
         mnt_raw = data.get("montant_ttc", "")
         if mnt_raw:
@@ -369,7 +374,7 @@ def log_to_json(filepath, data, score, status):
                 except ValueError:
                     logs = []
         logs.append(entry)
-        if len(logs) > MAX_LOG:               # FIX ROBUST-02
+        if len(logs) > MAX_LOG:
             logs = logs[-MAX_LOG:]
         with open(log_file, "w", encoding="utf-8") as f:
             json.dump(logs, f, indent=4, ensure_ascii=False)
@@ -378,7 +383,6 @@ def log_to_json(filepath, data, score, status):
 
 # ---------------------------------------------------------------------------
 # TRAITEMENT D'UNE PAGE PDF
-# FIX BUG-02 : les demandes UI sont envoyées dans ui_queue (thread principal)
 # ---------------------------------------------------------------------------
 def process_pdf(filepath, original_filename=None, page_num=None):
     filename = os.path.basename(filepath)
@@ -412,7 +416,6 @@ def process_pdf(filepath, original_filename=None, page_num=None):
             notify("Validation Requise", f"{display_name} nécessite une validation manuelle.")
             log_to_json(filepath, data, score, "PASSED_TO_UI")
 
-            # FIX BUG-02 : on envoie la tâche UI dans la queue du thread principal
             done_event = threading.Event()
             result_holder = [False]
 
@@ -496,7 +499,7 @@ class InvoiceHandler(FileSystemEventHandler):
 
 # ---------------------------------------------------------------------------
 # DÉMARRAGE PRINCIPAL
-# FIX BUG-02 : la boucle principale traite les UI requests dans le thread main
+# La boucle principale consomme ui_queue pour exécuter Tkinter dans ce thread.
 # ---------------------------------------------------------------------------
 def start_watcher():
     for d in (FOLDER_IN, FOLDER_OUT, FOLDER_ERR):
@@ -522,7 +525,6 @@ def start_watcher():
     try:
         while True:
             try:
-                # FIX BUG-02 : exécute les tâches Tkinter dans le thread principal
                 task = ui_queue.get(timeout=0.2)
                 task()
             except queue.Empty:

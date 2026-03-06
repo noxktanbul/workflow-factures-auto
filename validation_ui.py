@@ -41,7 +41,13 @@ FOLDER_IN  = os.path.join(BASE_DIR, _cfg.get('CHEMINS', 'FOLDER_ENTRANT', fallba
 FOLDER_OUT = os.path.join(BASE_DIR, _cfg.get('CHEMINS', 'FOLDER_TRAITE',  fallback='Traite'))
 FOLDER_ERR = os.path.join(BASE_DIR, _cfg.get('CHEMINS', 'FOLDER_ERREUR',  fallback='Erreur'))
 
-# FIX LOG-01 : encoding='utf-8'
+# Constantes d'extraction
+OCR_DPI          = 300   # résolution d'image pour Tesseract
+PREVIEW_DPI      = 150   # résolution de l'aperçu affiché dans l'UI
+MAX_PDF_PAGES    = 3     # nombre max de pages analysées par facture
+MIN_NATIVE_CHARS = 50    # seuil en dessous duquel on bascule en OCR
+ECHEANCE_JOURS   = 30    # délai de paiement par défaut (J+30)
+
 logging.basicConfig(
     filename=os.path.join(BASE_DIR, "workflow.log"),
     level=logging.INFO,
@@ -52,7 +58,7 @@ logging.basicConfig(
 pytesseract.pytesseract.tesseract_cmd = TESS_PATH
 
 # ---------------------------------------------------------------------------
-# NOTIFICATIONS — FIX COMPAT-01
+# NOTIFICATIONS
 # ---------------------------------------------------------------------------
 def notify(title, message, duration=5):
     try:
@@ -87,7 +93,7 @@ def detect_client(text):
     m = re.search(r'(?i)SOCIETE\s+(.*)', text)
     if m:
         return m.group(1).strip()
-    # BUG-D : exclut l'adresse Tauroentum elle-même
+    # Détection par bloc adresse : exclut les blocs contenant l'adresse de l'émetteur
     for m_addr in re.finditer(r'(?m)^([A-Z][A-Z0-9\s\-\.]{3,})\r?\n(?:.*\r?\n){0,3}\d{5}', text):
         block = m_addr.group(0)
         name  = m_addr.group(1).strip()
@@ -141,17 +147,16 @@ def extract_text_and_first_page_image(pdf_path):
     preview_img = None
     try:
         doc = fitz.open(pdf_path)
-        max_pages = min(len(doc), 3)
+        max_pages = min(len(doc), MAX_PDF_PAGES)
         for page_num in range(max_pages):
             page = doc.load_page(page_num)
-            # Preview à 150 dpi (uniquement pour l'affichage)
-            pix_preview = page.get_pixmap(dpi=150)
+            pix_preview = page.get_pixmap(dpi=PREVIEW_DPI)
             img_preview = Image.open(io.BytesIO(pix_preview.tobytes()))
             if page_num == 0:
                 preview_img = img_preview.copy()
-            # FIX PERF-01 : texte natif d'abord
+            # Texte natif en priorité, OCR en fallback si le texte est insuffisant
             native = page.get_text("text").strip()
-            if native and len(native) > 50:
+            if native and len(native) > MIN_NATIVE_CHARS:
                 parts.append(native)
             else:
                 img_ocr = preprocess_image(img_preview)
@@ -236,12 +241,12 @@ def parse_invoice_text(text):
     if data["is_avoir"] and data["montant_ttc"] and not str(data["montant_ttc"]).startswith("-"):
         data["montant_ttc"] = "-" + str(data["montant_ttc"])
 
-    # Échéance J+30
+    # Échéance par défaut si absente : date facture + ECHEANCE_JOURS
     data["_echeance_calculee"] = False
     if not data["date_echeance"] and data["date_facture"]:
         d = parse_date(data["date_facture"])
         if isinstance(d, datetime.datetime):
-            data["date_echeance"] = (d + datetime.timedelta(days=30)).strftime('%d/%m/%Y')
+            data["date_echeance"] = (d + datetime.timedelta(days=ECHEANCE_JOURS)).strftime('%d/%m/%Y')
             data["_echeance_calculee"] = True
 
     return data
@@ -298,10 +303,10 @@ def inject_to_excel(data):
 
         ws[f"A{next_row}"] = data.get("num_facture", "")
         ws[f"B{next_row}"] = data.get("client", "")
-        ws[f"C{next_row}"] = data.get("type_facture", "B2B")   # FIX FUNC-01
+        ws[f"C{next_row}"] = data.get("type_facture", "B2B")
         ws[f"E{next_row}"] = data.get("session", "")
-        ws[f"F{next_row}"] = parse_date(data.get("date_facture", ""))   # FIX FUNC-02
-        ws[f"G{next_row}"] = parse_date(data.get("date_echeance", ""))  # FIX FUNC-02
+        ws[f"F{next_row}"] = parse_date(data.get("date_facture", ""))
+        ws[f"G{next_row}"] = parse_date(data.get("date_echeance", ""))
 
         mnt_raw = data.get("montant_ttc", "")
         if mnt_raw:
@@ -412,7 +417,6 @@ class ValidationUI:
             bg="#FA8072", font=("Arial", 10, "bold"), height=2
         ).pack(side=tk.RIGHT, expand=True, fill=tk.X, padx=5)
 
-    # FIX BUG-01 : on_validate NE fait PAS l'injection — process_with_ui s'en charge
     def _on_validate(self):
         self.final_data = {key: var.get() for key, var in self.entries.items()}
         self.result = True
@@ -461,7 +465,6 @@ def process_with_ui(pdf_path, pre_data=None, pre_score=None):
     err_path = os.path.join(FOLDER_ERR, os.path.basename(pdf_path))
 
     if app.result:
-        # FIX BUG-01 : injection effectuée ici, une seule fois
         status = inject_to_excel(app.final_data)
         if status == "SUCCESS":
             logging.info("[UI] Injection Excel réussie.")
