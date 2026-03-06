@@ -185,25 +185,27 @@ def parse_invoice_text(text):
     _SEP  = r'[^a-zA-Z0-9]{0,4}'
 
     # Session extraite en premier pour exclure ses dates du fallback date_facture
-    m_sess = re.search(r'(?i)Session(?:\s*du)?\s*(\d{2}[/.\-]\d{2}[/.\-]\d{4}\s*au\s*\d{2}[/.\-]\d{2}[/.\-]\d{4})', text)
-    if m_sess: data["session"] = m_sess.group(1).strip()
+    # Les deux dates doivent être différentes pour éviter de confondre avec une ligne de tableau
+    m_sess = re.search(r'(?i)Session(?:\s*du)?\s*(\d{2}[/.\-]\d{2}[/.\-]\d{4})\s*au\s*(\d{2}[/.\-]\d{2}[/.\-]\d{4})', text)
+    if m_sess and m_sess.group(1) != m_sess.group(2):
+        data["session"] = f"{m_sess.group(1)} au {m_sess.group(2)}"
     _session_dates = set(re.findall(r'\d{2}[/.\-]\d{2}[/.\-]\d{4}', data["session"])) if data["session"] else set()
 
     # Numéro — 5 niveaux de fallback (tolérance aux artefacts OCR)
-    # Tier 0 : format littéral exact TAU_YYYY-NNN
-    m_tier0_full = re.search(r'TAU_(\d{4})-(\d{3,})\s+' + _DATE + r'(?:\s+\S+)?\s+' + _DATE, text, re.IGNORECASE)
-    m_tier0_date = re.search(r'TAU_(\d{4})-(\d{3,})\s+' + _DATE, text, re.IGNORECASE)
-    m_tier0_num  = re.search(r'TAU_(\d{4})-(\d{3,})', text, re.IGNORECASE)
-
-    if m_tier0_full:
-        data["num_facture"]   = f"TAU_{m_tier0_full.group(1)}-{m_tier0_full.group(2)}"
-        data["date_facture"]  = m_tier0_full.group(3).strip()
-        data["date_echeance"] = m_tier0_full.group(4).strip()
-    elif m_tier0_date:
-        data["num_facture"]  = f"TAU_{m_tier0_date.group(1)}-{m_tier0_date.group(2)}"
-        data["date_facture"] = m_tier0_date.group(3).strip()
-    elif m_tier0_num:
+    # Tier 0 : format littéral exact TAU_YYYY-NNN — dates cherchées dans la fenêtre de contexte
+    m_tier0_num = re.search(r'TAU_(\d{4})-(\d{3,})', text, re.IGNORECASE)
+    if m_tier0_num:
         data["num_facture"] = f"TAU_{m_tier0_num.group(1)}-{m_tier0_num.group(2)}"
+        ctx_start = max(0, m_tier0_num.start() - 50)
+        ctx_end   = min(len(text), m_tier0_num.end() + 200)
+        ctx = text[ctx_start:ctx_end]
+        dates_in_ctx = re.findall(r'\d{2}[/.\-]\d{2}[/.\-]\d{4}', ctx)
+        dates_in_ctx = [d for d in dates_in_ctx if d not in _session_dates]
+        if len(dates_in_ctx) >= 2:
+            data["date_facture"]  = dates_in_ctx[0]
+            data["date_echeance"] = dates_in_ctx[-1]
+        elif len(dates_in_ctx) == 1:
+            data["date_facture"] = dates_in_ctx[0]
 
     # Tiers 1-4 : fallback OCR-permissif si Tier 0 n'a pas tout trouvé
     if not data["num_facture"]:
@@ -223,7 +225,7 @@ def parse_invoice_text(text):
                     data["num_facture"] = f"TAU_{m_fac.group(1)}-{m_fac.group(2)}"
                 else:
                     m_near = re.search(r'(?i)num[eé]ro.{0,200}?(\d{4})[^a-zA-Z0-9]{1,4}(\d{3,})', text, re.DOTALL)
-                    if m_near:
+                    if m_near and 2020 <= int(m_near.group(1)) <= 2040:
                         data["num_facture"] = f"TAU_{m_near.group(1)}-{m_near.group(2)}"
 
     # Fallback date facture : exclut les lignes de session
@@ -245,10 +247,14 @@ def parse_invoice_text(text):
     data["type_facture"] = detect_type(text, data["client"])
 
     # Montant — priorité : Total TTC / Net à payer → Restant dû → Montant → fallback €
-    _AMOUNT = r'(\d{1,3}(?:[\s.]\d{3})*[,.]\d{2})'
+    # Pattern unifié : supporte 1.234,56 / 1 234,56 / 1234,56 / 260.00 / 260,00
+    _AMOUNT = r'(\d{1,3}(?:[\s]\d{3})*(?:[,.]\d{2})|(?:\d{1,3}(?:[.]\d{3})+(?:[,]\d{2})?)|\d+[,.]\d{2})'
 
     def _clean_amount(raw):
-        return re.sub(r'[\s.](?=\d{3})', '', raw.strip())
+        raw = raw.strip()
+        raw = re.sub(r'[\s](?=\d{3}(?:[,.]|$))', '', raw)
+        raw = re.sub(r'[.](?=\d{3}[,])', '', raw)
+        return raw
 
     m_ttc = re.search(r'(?i)(?:Total\s*TTC|Net\s*[àa]\s*payer|Solde\s*[àa]\s*payer)\D{0,15}' + _AMOUNT, text)
     if m_ttc:

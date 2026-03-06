@@ -9,6 +9,19 @@ Format basé sur [Keep a Changelog](https://keepachangelog.com/fr/1.0.0/).
 
 ---
 
+## [4.3.0] - 2026-03-06
+
+### Corrigé
+- **BUG-MONTANT-PERSIST** : regex `_AMOUNT` réécrite pour capturer les montants avec point décimal sans séparateur de milliers (`260.00`, `465.00`) — l'ancien pattern `(?:[\s.]\d{3})*` exigeait 3 chiffres après le point et ratait tous ces cas
+- **BUG-NUM-PERSIST** : Tier 0 utilise désormais une fenêtre de contexte (±200 chars) pour trouver les dates autour du numéro, même si elles sont sur des lignes séparées (layout tableau HTML extrait colonne par colonne par PyMuPDF)
+- **BUG-NUM-FAUX-POSITIF** : Tier 4 valide que l'année capturée est dans la plage 2020–2040 — empêche `Numéro de commande : MC30031699` d'être interprété comme `TAU_0031-699`
+- **BUG-SESSION-CONFUSION** : la détection de session exige que les deux dates soient différentes — empêche `25-02-2026 au 25-02-2026` (date facture = date échéance dans le tableau) d'être capturé comme session et de bloquer la date facture
+
+### Ajouté
+- 7 nouveaux tests unitaires couvrant les montants à point décimal, la session à dates identiques et le filtre année Tier 4
+
+---
+
 ## [4.2.0] - 2026-03-06
 
 ### Corrigé

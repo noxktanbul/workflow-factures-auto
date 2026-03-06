@@ -90,10 +90,9 @@ class TestTier0Regex(unittest.TestCase):
 
 
 class TestAmountPriority(unittest.TestCase):
-    """Couvre la priorité des mots-clés montant (BUG-AMOUNT-ZERO)."""
+    """Couvre la priorité des mots-clés montant (BUG-AMOUNT-ZERO / BUG-MONTANT-PERSIST)."""
 
     def test_total_ttc_takes_priority_over_montant(self):
-        # Cas EXAIL : Montant 0,00 apparaît avant Total TTC
         sample_text = (
             "TAU_2026-050 15/02/2026\n"
             "Montant 0,00 €\nEncaissement 0,00 €\n"
@@ -111,6 +110,46 @@ class TestAmountPriority(unittest.TestCase):
         sample_text = "TAU_2026-070 20/03/2026\nMontant 500,00 €\nRestant dû 0,00 €"
         result = parse_invoice_text(sample_text)
         self.assertEqual(result["montant_ttc"], "500,00")
+
+    def test_amount_dot_decimal_260(self):
+        # Cas réel CPF : montant avec point décimal 260.00€
+        sample_text = "TAU_2026-484 04-02-2026\nMontant 260.00€\nEncaissement 0.00€\nRestant du 260.00€"
+        result = parse_invoice_text(sample_text)
+        self.assertNotEqual(result["montant_ttc"], "")
+        self.assertNotIn(result["montant_ttc"], ["0.00", "0,00"])
+
+    def test_amount_dot_decimal_465(self):
+        # Cas réel EXAIL : 465.00€
+        sample_text = "TAU_2026-558 25-02-2026\nMontant 465.00€\nEncaissement 0.00€\nRestant du 465.00€"
+        result = parse_invoice_text(sample_text)
+        self.assertNotEqual(result["montant_ttc"], "")
+        self.assertNotIn(result["montant_ttc"], ["0.00", "0,00"])
+
+
+class TestSessionDetection(unittest.TestCase):
+    """Couvre la détection de session (BUG-SESSION-CONFUSION)."""
+
+    def test_same_date_session_not_captured(self):
+        # TAU_2026-559 : date facture = date échéance → ne doit PAS être une session
+        sample_text = "TAU_2026-559\nSession du 25-02-2026 au 25-02-2026\nMontant 450.00€"
+        result = parse_invoice_text(sample_text)
+        self.assertEqual(result["session"], "")
+
+    def test_different_dates_session_captured(self):
+        sample_text = "Session du 23/02/2026 au 24/02/2026\nTAU_2026-558 25-02-2026\nMontant 465.00€"
+        result = parse_invoice_text(sample_text)
+        self.assertIn("23/02/2026", result["session"])
+        self.assertIn("24/02/2026", result["session"])
+
+
+class TestTier4YearFilter(unittest.TestCase):
+    """Couvre le filtre année du Tier 4 (BUG-NUM-FAUX-POSITIF)."""
+
+    def test_tier4_ignores_invalid_year(self):
+        # MC30031699 → 0031 n'est pas une année valide, ne doit pas être capturé
+        sample_text = "Numéro de commande : MC30031699\nMontant 465.00€"
+        result = parse_invoice_text(sample_text)
+        self.assertEqual(result["num_facture"], "")
 
 
 class TestClientCPF(unittest.TestCase):
