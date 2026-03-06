@@ -161,9 +161,14 @@ def extract_text_and_first_page_image(pdf_path):
             if native and len(native) > MIN_NATIVE_CHARS:
                 parts.append(native)
             else:
-                img_ocr = preprocess_image(img_preview)
-                ocr_text = pytesseract.image_to_string(img_ocr, lang='fra', config='--psm 6')
-                parts.append(ocr_text)
+                img_proc = preprocess_image(img_preview)
+                ocr_full = pytesseract.image_to_string(img_proc, lang='fra', config='--psm 3')
+                # Passe ciblée sur le tiers inférieur (tableau Montant/Encaissement/Restant du)
+                w, h = img_preview.size
+                bottom_crop = img_preview.crop((0, int(h * 0.55), w, h))
+                bottom_proc = preprocess_image(bottom_crop)
+                ocr_bottom = pytesseract.image_to_string(bottom_proc, lang='fra', config='--psm 3')
+                parts.append(ocr_full + "\n" + ocr_bottom)
         doc.close()
     except Exception as e:
         logging.error(f"Erreur OCR/aperçu sur {pdf_path}: {e}")

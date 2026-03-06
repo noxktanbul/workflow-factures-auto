@@ -165,12 +165,17 @@ def extract_text_from_pdf(pdf_path):
             if native and len(native) > MIN_NATIVE_CHARS:
                 parts.append(native)
             else:
-                # Fallback OCR sur image
+                # Fallback OCR sur image — double passe pour capturer le tableau montant
                 pix = page.get_pixmap(dpi=OCR_DPI)
                 page_img = Image.open(io.BytesIO(pix.tobytes()))
-                page_img = preprocess_image(page_img)
-                ocr_text = pytesseract.image_to_string(page_img, lang='fra', config='--psm 6')
-                parts.append(ocr_text)
+                page_img_proc = preprocess_image(page_img)
+                ocr_full = pytesseract.image_to_string(page_img_proc, lang='fra', config='--psm 3')
+                # Passe ciblée sur le tiers inférieur (tableau Montant/Encaissement/Restant du)
+                w, h = page_img.size
+                bottom_crop = page_img.crop((0, int(h * 0.55), w, h))
+                bottom_proc = preprocess_image(bottom_crop)
+                ocr_bottom = pytesseract.image_to_string(bottom_proc, lang='fra', config='--psm 3')
+                parts.append(ocr_full + "\n" + ocr_bottom)
         doc.close()
     except Exception as e:
         logging.error(f"Erreur extraction texte sur {pdf_path}: {e}")
