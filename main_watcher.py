@@ -20,8 +20,7 @@ from openpyxl import load_workbook
 import validation_ui
 
 # ---------------------------------------------------------------------------
-# CONFIG — FIX CONFIG-01 / CONFIG-02
-# Charge config.ini depuis le dossier du script ou de l'exe.
+# CONFIG — chargé depuis config.ini dans le dossier du script ou de l'exe
 # ---------------------------------------------------------------------------
 def _get_script_dir():
     if getattr(sys, 'frozen', False):
@@ -101,7 +100,7 @@ def detect_client(text):
     m = re.search(r'(?i)SOCIETE\s+(.*)', text)
     if m:
         return m.group(1).strip()
-    # Tier 3 : bloc adresse avec code postal — BUG-D : exclut l'adresse Tauroentum elle-même
+    # Tier 3 : bloc adresse avec code postal — exclut l'adresse de l'émetteur
     for m_addr in re.finditer(r'(?m)^([A-Z][A-Z0-9\s\-\.]{3,})\r?\n(?:.*\r?\n){0,3}\d{5}', text):
         block = m_addr.group(0)
         name  = m_addr.group(1).strip()
@@ -190,12 +189,12 @@ def parse_invoice_text(text):
     # Séparateur OCR permissif : tiret, underscore, espace, point, tiret long, pipe...
     _SEP  = r'[^a-zA-Z0-9]{0,4}'
 
-    # 1. Session (extraite EN PREMIER pour pouvoir exclure ses dates ensuite — BUG-B)
+    # 1. Session (extraite EN PREMIER pour pouvoir exclure ses dates du fallback date_facture)
     m_sess = re.search(r'(?i)Session(?:\s*du)?\s*(\d{2}[/.\-]\d{2}[/.\-]\d{4}\s*au\s*\d{2}[/.\-]\d{2}[/.\-]\d{4})', text)
     if m_sess: data["session"] = m_sess.group(1).strip()
     _session_dates = set(re.findall(r'\d{2}[/.\-]\d{2}[/.\-]\d{4}', data["session"])) if data["session"] else set()
 
-    # 2. Numéro de facture — BUG-A : 3 niveaux de fallback
+    # 2. Numéro de facture — 4 niveaux de fallback (tolérance aux artefacts OCR)
     # Tier 1 : ligne de tableau complète num+date+n°client+echeance
     m_row = re.search(
         r'TAU' + _SEP + r'(\d{4})' + _SEP + r'(\d{3,})\s+' + _DATE + r'(?:\s+\S+)?\s+' + _DATE,

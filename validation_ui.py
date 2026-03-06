@@ -182,12 +182,12 @@ def parse_invoice_text(text):
     _DATE = r'(\d{2}[/.\-]\d{2}[/.\-]\d{4})'
     _SEP  = r'[^a-zA-Z0-9]{0,4}'
 
-    # Session en premier (BUG-B : ses dates sont exclues du fallback date_facture)
+    # Session extraite en premier pour exclure ses dates du fallback date_facture
     m_sess = re.search(r'(?i)Session(?:\s*du)?\s*(\d{2}[/.\-]\d{2}[/.\-]\d{4}\s*au\s*\d{2}[/.\-]\d{2}[/.\-]\d{4})', text)
     if m_sess: data["session"] = m_sess.group(1).strip()
     _session_dates = set(re.findall(r'\d{2}[/.\-]\d{2}[/.\-]\d{4}', data["session"])) if data["session"] else set()
 
-    # Numéro — BUG-A : 4 niveaux de fallback
+    # Numéro — 4 niveaux de fallback (tolérance aux artefacts OCR)
     m_row = re.search(r'TAU' + _SEP + r'(\d{4})' + _SEP + r'(\d{3,})\s+' + _DATE + r'(?:\s+\S+)?\s+' + _DATE, text, re.IGNORECASE)
     if m_row:
         data["num_facture"]   = f"TAU_{m_row.group(1)}-{m_row.group(2)}"
@@ -442,10 +442,11 @@ def process_with_ui(pdf_path, pre_data=None, pre_score=None):
         first_page_img = None
         try:
             doc = fitz.open(pdf_path)
-            pix = doc.load_page(0).get_pixmap(dpi=150)
+            pix = doc.load_page(0).get_pixmap(dpi=PREVIEW_DPI)
             img = Image.open(io.BytesIO(pix.tobytes()))
             # Vérifie que la page n'est pas vide (page blanche ou sans contenu)
-            if pix.width > 10 and pix.height > 10:
+            min_page_px = 10
+            if pix.width > min_page_px and pix.height > min_page_px:
                 first_page_img = img.copy()
             else:
                 logging.warning(f"[UI] Page vide ou trop petite pour {os.path.basename(pdf_path)}")
