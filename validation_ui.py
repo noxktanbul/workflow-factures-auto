@@ -57,10 +57,12 @@ logging.basicConfig(
 
 pytesseract.pytesseract.tesseract_cmd = TESS_PATH
 
+NOTIF_DURATION_SEC = 5  # durée d'affichage des notifications Windows
+
 # ---------------------------------------------------------------------------
 # NOTIFICATIONS
 # ---------------------------------------------------------------------------
-def notify(title, message, duration=5):
+def notify(title, message, duration=NOTIF_DURATION_SEC):
     try:
         from win10toast import ToastNotifier
         ToastNotifier().show_toast(title, message, duration=duration, threaded=True)
@@ -207,7 +209,7 @@ def parse_invoice_text(text):
                 if m_near:
                     data["num_facture"] = f"TAU_{m_near.group(1)}-{m_near.group(2)}"
 
-        # Fallback date facture — BUG-B
+        # Fallback date facture : exclut les lignes de session
         if not data["date_facture"]:
             for line in text.splitlines():
                 if re.search(r'(?i)session|\bdu\b.+\bau\b', line):

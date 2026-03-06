@@ -62,10 +62,12 @@ pytesseract.pytesseract.tesseract_cmd = TESS_PATH
 # Tkinter doit s'exécuter dans le thread principal : les workers y envoient leurs tâches UI via cette queue
 ui_queue = queue.Queue()
 
+NOTIF_DURATION_SEC = 5  # durée d'affichage des notifications Windows
+
 # ---------------------------------------------------------------------------
-# NOTIFICATIONS — FIX COMPAT-01 : fallback si win10toast indisponible
+# NOTIFICATIONS — fallback log si win10toast indisponible
 # ---------------------------------------------------------------------------
-def notify(title, message, duration=5):
+def notify(title, message, duration=NOTIF_DURATION_SEC):
     try:
         from win10toast import ToastNotifier
         ToastNotifier().show_toast(title, message, duration=duration, threaded=True)
@@ -227,7 +229,7 @@ def parse_invoice_text(text):
                 if m_near:
                     data["num_facture"] = f"TAU_{m_near.group(1)}-{m_near.group(2)}"
 
-        # Fallback date facture — BUG-B : exclut lignes session ET lignes "du ... au"
+        # Fallback date facture : exclut les lignes de session et les plages "du ... au"
         if not data["date_facture"]:
             for line in text.splitlines():
                 if re.search(r'(?i)session|\bdu\b.+\bau\b', line):
