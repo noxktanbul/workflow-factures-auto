@@ -17,7 +17,7 @@ from tkinter import messagebox
 from openpyxl import load_workbook
 
 # ---------------------------------------------------------------------------
-# CONFIG — FIX CONFIG-01 / CONFIG-02
+# CONFIG — chargé depuis config.ini dans le dossier du script ou de l'exe
 # ---------------------------------------------------------------------------
 def _get_script_dir():
     if getattr(sys, 'frozen', False):
@@ -368,7 +368,6 @@ class ValidationUI:
 
         tk.Label(right, text="Vérification des Données", font=("Arial", 15, "bold")).pack(pady=10)
 
-        # FIX UX-02 : affichage du score de confiance
         score_txt = f"Score de confiance : {self.score}/10"
         tk.Label(
             right, text=score_txt,

@@ -62,7 +62,9 @@ pytesseract.pytesseract.tesseract_cmd = TESS_PATH
 # Tkinter doit s'exécuter dans le thread principal : les workers y envoient leurs tâches UI via cette queue
 ui_queue = queue.Queue()
 
-NOTIF_DURATION_SEC = 5  # durée d'affichage des notifications Windows
+NOTIF_DURATION_SEC  = 5    # durée d'affichage des notifications Windows
+FILE_SETTLE_SEC     = 2    # délai d'attente après détection pour que le fichier soit écrit
+UI_QUEUE_TIMEOUT    = 0.2  # intervalle de polling de la queue UI (secondes)
 
 # ---------------------------------------------------------------------------
 # NOTIFICATIONS — fallback log si win10toast indisponible
@@ -75,7 +77,7 @@ def notify(title, message, duration=NOTIF_DURATION_SEC):
         logging.info(f"[NOTIF] {title} : {message}")
 
 # ---------------------------------------------------------------------------
-# CLIENTS CONNUS — FIX FUNC-03
+# CLIENTS CONNUS
 # ---------------------------------------------------------------------------
 def _load_clients():
     path = os.path.join(SCRIPT_DIR, "clients_connus.json")
@@ -115,7 +117,7 @@ def detect_client(text):
     return ""
 
 # ---------------------------------------------------------------------------
-# DÉTECTION TYPE — FIX FUNC-01
+# DÉTECTION TYPE (B2B / CPF / B2C)
 # ---------------------------------------------------------------------------
 def detect_type(text, client):
     text_up = text.upper()
@@ -126,7 +128,7 @@ def detect_type(text, client):
     return "B2B"
 
 # ---------------------------------------------------------------------------
-# CONVERSION DATE — FIX FUNC-02
+# CONVERSION DATE — retourne un objet datetime pour injection Excel
 # ---------------------------------------------------------------------------
 def parse_date(date_str):
     if not date_str:
@@ -149,7 +151,7 @@ def preprocess_image(img):
     return img
 
 # ---------------------------------------------------------------------------
-# EXTRACTION TEXTE — FIX PERF-01 : texte natif d'abord, OCR en fallback
+# EXTRACTION TEXTE — texte natif PyMuPDF en priorité, OCR Tesseract en fallback
 # ---------------------------------------------------------------------------
 def extract_text_from_pdf(pdf_path):
     parts = []
@@ -175,7 +177,7 @@ def extract_text_from_pdf(pdf_path):
     return "\n".join(parts)
 
 # ---------------------------------------------------------------------------
-# PARSING — FIX FUNC-01, FUNC-03, REGEX-01
+# PARSING
 # ---------------------------------------------------------------------------
 def parse_invoice_text(text):
     data = {
@@ -293,7 +295,7 @@ def calculate_confidence(data):
     return max(0, score)
 
 # ---------------------------------------------------------------------------
-# SAUVEGARDE EXCEL — FIX ROBUST-01
+# SAUVEGARDE EXCEL — copie .bak avant chaque écriture
 # ---------------------------------------------------------------------------
 def backup_excel():
     try:
@@ -314,7 +316,7 @@ def check_duplicate(ws, num_facture):
     return False
 
 # ---------------------------------------------------------------------------
-# INJECTION EXCEL — FIX FUNC-01, FUNC-02, ROBUST-01
+# INJECTION EXCEL
 # ---------------------------------------------------------------------------
 def inject_to_excel(data):
     try:
@@ -354,7 +356,7 @@ def inject_to_excel(data):
         return "ERROR"
 
 # ---------------------------------------------------------------------------
-# LOG JSON — FIX ROBUST-02 : rotation automatique
+# LOG JSON — rotation automatique à MAX_LOG entrées
 # ---------------------------------------------------------------------------
 def log_to_json(filepath, data, score, status):
     log_file = os.path.join(BASE_DIR, "workflow.json")
@@ -482,7 +484,7 @@ def split_and_process_pdf(filepath):
         except Exception as mv_err: logging.warning(f"Déplacement vers Erreur échoué (split) : {mv_err}")
 
 # ---------------------------------------------------------------------------
-# WATCHDOG HANDLER — FIX BUG-02 : traitement dans un thread secondaire
+# WATCHDOG HANDLER — traitement dans un thread secondaire (non-bloquant)
 # ---------------------------------------------------------------------------
 class InvoiceHandler(FileSystemEventHandler):
     def on_created(self, event):
@@ -491,7 +493,7 @@ class InvoiceHandler(FileSystemEventHandler):
         filepath = event.src_path
         if filepath.lower().endswith(".pdf") and not os.path.basename(filepath).startswith("temp_page_"):
             logging.info(f"Nouveau fichier détecté : {filepath}")
-            time.sleep(2)
+            time.sleep(FILE_SETTLE_SEC)
             threading.Thread(
                 target=split_and_process_pdf,
                 args=(filepath,),
@@ -526,7 +528,7 @@ def start_watcher():
     try:
         while True:
             try:
-                task = ui_queue.get(timeout=0.2)
+                task = ui_queue.get(timeout=UI_QUEUE_TIMEOUT)
                 task()
             except queue.Empty:
                 pass
