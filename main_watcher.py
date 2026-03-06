@@ -198,54 +198,74 @@ def parse_invoice_text(text):
     if m_sess: data["session"] = m_sess.group(1).strip()
     _session_dates = set(re.findall(r'\d{2}[/.\-]\d{2}[/.\-]\d{4}', data["session"])) if data["session"] else set()
 
-    # 2. Numéro de facture — 4 niveaux de fallback (tolérance aux artefacts OCR)
-    # Tier 1 : ligne de tableau complète num+date+n°client+echeance
-    m_row = re.search(
-        r'TAU' + _SEP + r'(\d{4})' + _SEP + r'(\d{3,})\s+' + _DATE + r'(?:\s+\S+)?\s+' + _DATE,
+    # 2. Numéro de facture — 5 niveaux de fallback (tolérance aux artefacts OCR)
+    # Tier 0 : format littéral exact TAU_YYYY-NNN avec dates optionnelles sur la même ligne
+    m_tier0_full = re.search(
+        r'TAU_(\d{4})-(\d{3,})\s+' + _DATE + r'(?:\s+\S+)?\s+' + _DATE,
         text, re.IGNORECASE
     )
-    if m_row:
-        data["num_facture"]   = f"TAU_{m_row.group(1)}-{m_row.group(2)}"
-        data["date_facture"]  = m_row.group(3).strip()
-        data["date_echeance"] = m_row.group(4).strip()
-    else:
-        # Tier 2 : num + date (table sans colonne échéance)
-        m_row2 = re.search(
-            r'TAU' + _SEP + r'(\d{4})' + _SEP + r'(\d{3,})\s+' + _DATE,
+    m_tier0_date = re.search(r'TAU_(\d{4})-(\d{3,})\s+' + _DATE, text, re.IGNORECASE)
+    m_tier0_num  = re.search(r'TAU_(\d{4})-(\d{3,})', text, re.IGNORECASE)
+
+    if m_tier0_full:
+        data["num_facture"]   = f"TAU_{m_tier0_full.group(1)}-{m_tier0_full.group(2)}"
+        data["date_facture"]  = m_tier0_full.group(3).strip()
+        data["date_echeance"] = m_tier0_full.group(4).strip()
+    elif m_tier0_date:
+        data["num_facture"]  = f"TAU_{m_tier0_date.group(1)}-{m_tier0_date.group(2)}"
+        data["date_facture"] = m_tier0_date.group(3).strip()
+    elif m_tier0_num:
+        data["num_facture"] = f"TAU_{m_tier0_num.group(1)}-{m_tier0_num.group(2)}"
+
+    # Tiers 1-4 : fallback OCR-permissif si Tier 0 n'a pas tout trouvé
+    if not data["num_facture"]:
+        # Tier 1 : ligne de tableau complète num+date+n°client+echeance
+        m_row = re.search(
+            r'TAU' + _SEP + r'(\d{4})' + _SEP + r'(\d{3,})\s+' + _DATE + r'(?:\s+\S+)?\s+' + _DATE,
             text, re.IGNORECASE
         )
-        if m_row2:
-            data["num_facture"]  = f"TAU_{m_row2.group(1)}-{m_row2.group(2)}"
-            data["date_facture"] = m_row2.group(3).strip()
+        if m_row:
+            data["num_facture"]   = f"TAU_{m_row.group(1)}-{m_row.group(2)}"
+            data["date_facture"]  = m_row.group(3).strip()
+            data["date_echeance"] = m_row.group(4).strip()
         else:
-            # Tier 3 : num seul avec séparateurs très permissifs
-            m_fac = re.search(r'TAU' + _SEP + r'(\d{4})' + _SEP + r'(\d{3,})', text, re.IGNORECASE)
-            if m_fac:
-                data["num_facture"] = f"TAU_{m_fac.group(1)}-{m_fac.group(2)}"
+            # Tier 2 : num + date (table sans colonne échéance)
+            m_row2 = re.search(
+                r'TAU' + _SEP + r'(\d{4})' + _SEP + r'(\d{3,})\s+' + _DATE,
+                text, re.IGNORECASE
+            )
+            if m_row2:
+                data["num_facture"]  = f"TAU_{m_row2.group(1)}-{m_row2.group(2)}"
+                data["date_facture"] = m_row2.group(3).strip()
             else:
-                # Tier 4 : cherche YYYY-NNN ou YYYY_NNN près du mot "Numéro"
-                m_near = re.search(
-                    r'(?i)num[eé]ro.{0,200}?(\d{4})[^a-zA-Z0-9]{1,4}(\d{3,})',
-                    text, re.DOTALL
-                )
-                if m_near:
-                    data["num_facture"] = f"TAU_{m_near.group(1)}-{m_near.group(2)}"
+                # Tier 3 : num seul avec séparateurs très permissifs
+                m_fac = re.search(r'TAU' + _SEP + r'(\d{4})' + _SEP + r'(\d{3,})', text, re.IGNORECASE)
+                if m_fac:
+                    data["num_facture"] = f"TAU_{m_fac.group(1)}-{m_fac.group(2)}"
+                else:
+                    # Tier 4 : cherche YYYY-NNN ou YYYY_NNN près du mot "Numéro"
+                    m_near = re.search(
+                        r'(?i)num[eé]ro.{0,200}?(\d{4})[^a-zA-Z0-9]{1,4}(\d{3,})',
+                        text, re.DOTALL
+                    )
+                    if m_near:
+                        data["num_facture"] = f"TAU_{m_near.group(1)}-{m_near.group(2)}"
 
-        # Fallback date facture : exclut les lignes de session et les plages "du ... au"
-        if not data["date_facture"]:
-            for line in text.splitlines():
-                if re.search(r'(?i)session|\bdu\b.+\bau\b', line):
-                    continue
-                m_d = re.search(_DATE, line)
-                if m_d and m_d.group(1) not in _session_dates:
-                    data["date_facture"] = m_d.group(1).strip()
-                    break
+    # Fallback date facture : exclut les lignes de session et les plages "du ... au"
+    if not data["date_facture"]:
+        for line in text.splitlines():
+            if re.search(r'(?i)session|\bdu\b.+\bau\b', line):
+                continue
+            m_d = re.search(_DATE, line)
+            if m_d and m_d.group(1) not in _session_dates:
+                data["date_facture"] = m_d.group(1).strip()
+                break
 
-        # Fallback date échéance via mot-clé
-        if not data["date_echeance"]:
-            m_ech = re.search(r'(?i)(?:[eé]ch[eé]ance|r[eè]glement)\D{0,30}' + _DATE, text)
-            if m_ech:
-                data["date_echeance"] = re.findall(_DATE, m_ech.group(0))[-1]
+    # Fallback date échéance via mot-clé
+    if not data["date_echeance"]:
+        m_ech = re.search(r'(?i)(?:[eé]ch[eé]ance|r[eè]glement)\D{0,30}' + _DATE, text)
+        if m_ech:
+            data["date_echeance"] = re.findall(_DATE, m_ech.group(0))[-1]
 
     # 3. Client
     data["client"] = detect_client(text)
@@ -253,20 +273,34 @@ def parse_invoice_text(text):
     # 4. Type CPF/B2B/B2C
     data["type_facture"] = detect_type(text, data["client"])
 
-    # 5. Montant TTC — BUG-C : séparateurs de milliers (5 600,00 / 5.600,00)
+    # 5. Montant TTC — priorité : Total TTC / Net à payer → Restant dû → Montant → fallback €
     _AMOUNT = r'(\d{1,3}(?:[\s.]\d{3})*[,.]\d{2})'
-    m_ttc = re.search(
-        r'(?i)(?:Total\s*TTC|Net\s*[àa]\s*payer|Montant\s*(?:TTC)?|Restant\s*d[uûü]|Solde)\D{0,15}' + _AMOUNT,
-        text
-    )
+
+    def _clean_amount(raw):
+        return re.sub(r'[\s.](?=\d{3})', '', raw.strip())
+
+    # Niveau A : mots-clés de haute confiance (ne contiennent jamais une sous-somme)
+    m_ttc = re.search(r'(?i)(?:Total\s*TTC|Net\s*[àa]\s*payer|Solde\s*[àa]\s*payer)\D{0,15}' + _AMOUNT, text)
     if m_ttc:
-        amount_raw = m_ttc.group(1).strip()
-        data["montant_ttc"] = re.sub(r'[\s.](?=\d{3})', '', amount_raw)  # retire séparateur milliers
+        data["montant_ttc"] = _clean_amount(m_ttc.group(1))
     else:
-        m_mnt = re.search(_AMOUNT + r'\s*[€eE]', text)
-        if m_mnt:
-            amount_raw = m_mnt.group(1).strip()
-            data["montant_ttc"] = re.sub(r'[\s.](?=\d{3})', '', amount_raw)
+        # Niveau B : Restant dû — montant définitif si non nul
+        m_restant = re.search(r'(?i)Restant\s*d[uûü]\D{0,15}' + _AMOUNT, text)
+        if m_restant:
+            val = _clean_amount(m_restant.group(1))
+            cleaned = val.replace(',', '.').replace(' ', '')
+            if float(cleaned) > 0:
+                data["montant_ttc"] = val
+        # Niveau C : mot-clé générique Montant (peut désigner une sous-somme)
+        if not data["montant_ttc"]:
+            m_mnt_kw = re.search(r'(?i)Montant\s*(?:TTC)?\D{0,15}' + _AMOUNT, text)
+            if m_mnt_kw:
+                data["montant_ttc"] = _clean_amount(m_mnt_kw.group(1))
+        # Niveau D : fallback — premier nombre suivi du symbole €
+        if not data["montant_ttc"]:
+            m_eur = re.search(_AMOUNT + r'\s*[€eE]', text)
+            if m_eur:
+                data["montant_ttc"] = _clean_amount(m_eur.group(1))
 
     if data["is_avoir"] and data["montant_ttc"] and not str(data["montant_ttc"]).startswith("-"):
         data["montant_ttc"] = "-" + str(data["montant_ttc"])

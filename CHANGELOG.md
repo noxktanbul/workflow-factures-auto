@@ -9,6 +9,19 @@ Format basé sur [Keep a Changelog](https://keepachangelog.com/fr/1.0.0/).
 
 ---
 
+## [4.2.0] - 2026-03-06
+
+### Corrigé
+- **BUG-NUM** : Ajout d'un Tier 0 avec regex littérale `TAU_\d{4}-\d{3,}` — résout l'échec d'extraction sur les PDFs natifs (tableaux HTML) où `TAU_2026-557` n'était pas capturé par les tiers permissifs
+- **BUG-DATE** : Restructuration du bloc de fallback dates — les dates sont maintenant cherchées même quand Tier 0 a trouvé le numéro mais pas les dates
+- **BUG-AMOUNT-ZERO** : Priorité des mots-clés montant réordonnée : `Total TTC` / `Net à payer` → `Restant dû` (non nul) → `Montant` → fallback `€` ; évite de capturer un sous-montant nul (encaissement)
+- **BUG-CLIENT-CPF** : `clients_connus.json` — `CAISSE DES DEPOTS` retourne désormais `"CAISSE DES DEPOTS"` comme client (au lieu de `"CPF"`) ; le type CPF reste correctement détecté par `detect_type`
+
+### Ajouté
+- 10 nouveaux tests unitaires couvrant Tier 0, la priorité des montants et la séparation client/type CPF
+
+---
+
 ## [4.1.0] - 2026-03-06
 
 ### Ajouté

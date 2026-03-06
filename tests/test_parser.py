@@ -4,7 +4,7 @@ import unittest
 
 sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
-from main_watcher import parse_invoice_text, calculate_confidence, detect_client
+from main_watcher import parse_invoice_text, calculate_confidence
 import validation_ui
 
 
@@ -64,6 +64,67 @@ class TestInvoiceParsing(unittest.TestCase):
         sample_text = "TAU 2026 700 01/04/2026\nTotal TTC 1.234,56 €"
         result = parse_invoice_text(sample_text)
         self.assertEqual(result["montant_ttc"], "1234,56")
+
+
+class TestTier0Regex(unittest.TestCase):
+    """Couvre le Tier 0 : format littéral TAU_YYYY-NNN présent dans les PDFs natifs."""
+
+    def test_tier0_num_only(self):
+        sample_text = "Facture N° TAU_2026-557\nSociété EXAIL\nTotal TTC 465,00 €"
+        result = parse_invoice_text(sample_text)
+        self.assertEqual(result["num_facture"], "TAU_2026-557")
+
+    def test_tier0_with_date(self):
+        sample_text = "TAU_2026-557 25-02-2026\nTotal TTC 465,00 €"
+        result = parse_invoice_text(sample_text)
+        self.assertEqual(result["num_facture"], "TAU_2026-557")
+        self.assertEqual(result["date_facture"], "25-02-2026")
+
+    def test_tier0_with_both_dates(self):
+        sample_text = "TAU_2026-487 01-02-2026 1 03-03-2026\nTotal TTC 1 200,00 €"
+        result = parse_invoice_text(sample_text)
+        self.assertEqual(result["num_facture"], "TAU_2026-487")
+        self.assertEqual(result["date_facture"], "01-02-2026")
+        self.assertEqual(result["date_echeance"], "03-03-2026")
+        self.assertFalse(result["_echeance_calculee"])
+
+
+class TestAmountPriority(unittest.TestCase):
+    """Couvre la priorité des mots-clés montant (BUG-AMOUNT-ZERO)."""
+
+    def test_total_ttc_takes_priority_over_montant(self):
+        # Cas EXAIL : Montant 0,00 apparaît avant Total TTC
+        sample_text = (
+            "TAU_2026-050 15/02/2026\n"
+            "Montant 0,00 €\nEncaissement 0,00 €\n"
+            "Total TTC 465,00 €"
+        )
+        result = parse_invoice_text(sample_text)
+        self.assertEqual(result["montant_ttc"], "465,00")
+
+    def test_restant_du_nonzero_used_when_no_total_ttc(self):
+        sample_text = "TAU_2026-060 20/03/2026\nMontant 0,00 €\nRestant dû 320,00 €"
+        result = parse_invoice_text(sample_text)
+        self.assertEqual(result["montant_ttc"], "320,00")
+
+    def test_restant_du_zero_falls_back_to_montant(self):
+        sample_text = "TAU_2026-070 20/03/2026\nMontant 500,00 €\nRestant dû 0,00 €"
+        result = parse_invoice_text(sample_text)
+        self.assertEqual(result["montant_ttc"], "500,00")
+
+
+class TestClientCPF(unittest.TestCase):
+    """Couvre la séparation client / type pour les factures CPF."""
+
+    def test_caisse_des_depots_client_not_cpf(self):
+        sample_text = (
+            "TAU_2026-100 01/01/2026\n"
+            "CAISSE DES DEPOTS ET CONSIGNATIONS\n"
+            "Total TTC 800,00 €"
+        )
+        result = parse_invoice_text(sample_text)
+        self.assertEqual(result["client"], "CAISSE DES DEPOTS")
+        self.assertEqual(result["type_facture"], "CPF")
 
 
 class TestConfidenceScore(unittest.TestCase):

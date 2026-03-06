@@ -7,7 +7,7 @@
     {"pattern": "CREDIT MUTUEL|CRÉDIT MUTUEL",       "client": "CREDIT MUTUEL"},
     {"pattern": "EURO.INFORMATION",                  "client": "EURO-INFORMATION"},
     {"pattern": "IONOS",                             "client": "IONOS"},
-    {"pattern": "CAISSE DES DEPOTS|CAISSE DES DÉPÔTS", "client": "CPF"},
+    {"pattern": "CAISSE DES DEPOTS|CAISSE DES DÉPÔTS", "client": "CAISSE DES DEPOTS"},
     {"pattern": "COMPTE PERSONNEL DE FORMATION",    "client": "CPF"},
     {"pattern": "BIANCO",                            "client": "BIANCO Stéphane"},
     {"pattern": "MELICUCCI",                         "client": "MELICUCCI"},
