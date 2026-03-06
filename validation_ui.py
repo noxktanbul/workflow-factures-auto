@@ -137,8 +137,8 @@ def preprocess_image(img):
 # EXTRACTION TEXTE + IMAGE PREVIEW — FIX PERF-01
 # ---------------------------------------------------------------------------
 def extract_text_and_first_page_image(pdf_path):
-    full_text = ""
-    first_page_img = None
+    parts = []
+    preview_img = None
     try:
         doc = fitz.open(pdf_path)
         max_pages = min(len(doc), 3)
@@ -148,19 +148,19 @@ def extract_text_and_first_page_image(pdf_path):
             pix_preview = page.get_pixmap(dpi=150)
             img_preview = Image.open(io.BytesIO(pix_preview.tobytes()))
             if page_num == 0:
-                first_page_img = img_preview.copy()
+                preview_img = img_preview.copy()
             # FIX PERF-01 : texte natif d'abord
             native = page.get_text("text").strip()
             if native and len(native) > 50:
-                full_text += native + "\n"
+                parts.append(native)
             else:
                 img_ocr = preprocess_image(img_preview)
                 ocr_text = pytesseract.image_to_string(img_ocr, lang='fra', config='--psm 6')
-                full_text += ocr_text + "\n"
+                parts.append(ocr_text)
         doc.close()
     except Exception as e:
         logging.error(f"Erreur OCR/aperçu sur {pdf_path}: {e}")
-    return full_text, first_page_img
+    return "\n".join(parts), preview_img
 
 # ---------------------------------------------------------------------------
 # PARSING — FIX FUNC-01, FUNC-03, REGEX-01
@@ -478,7 +478,7 @@ def process_with_ui(pdf_path, pre_data=None, pre_score=None):
             messagebox.showwarning("Doublon", "Cette facture existe déjà dans l'échéancier.", parent=_tmp)
             _tmp.destroy()
             try: shutil.move(os.path.abspath(pdf_path), os.path.abspath(err_path))
-            except Exception: pass
+            except Exception as mv_err: logging.warning(f"[UI] Déplacement échoué (doublon) : {mv_err}")
             return False
         else:
             logging.warning("[UI] Echec injection.")
@@ -486,12 +486,12 @@ def process_with_ui(pdf_path, pre_data=None, pre_score=None):
             messagebox.showerror("Erreur", "Une erreur est survenue lors de l'injection.", parent=_tmp)
             _tmp.destroy()
             try: shutil.move(os.path.abspath(pdf_path), os.path.abspath(err_path))
-            except Exception: pass
+            except Exception as mv_err: logging.warning(f"[UI] Déplacement échoué (erreur) : {mv_err}")
             return False
     else:
         logging.info("[UI] Rejet par l'utilisateur.")
         try: shutil.move(os.path.abspath(pdf_path), os.path.abspath(err_path))
-        except Exception: pass
+        except Exception as mv_err: logging.warning(f"[UI] Déplacement échoué (rejet) : {mv_err}")
         return False
 
 # ---------------------------------------------------------------------------

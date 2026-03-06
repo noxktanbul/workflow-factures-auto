@@ -146,7 +146,7 @@ def preprocess_image(img):
 # EXTRACTION TEXTE — FIX PERF-01 : texte natif d'abord, OCR en fallback
 # ---------------------------------------------------------------------------
 def extract_text_from_pdf(pdf_path):
-    full_text = ""
+    parts = []
     try:
         doc = fitz.open(pdf_path)
         max_pages = min(len(doc), 3)
@@ -155,18 +155,18 @@ def extract_text_from_pdf(pdf_path):
             # Tentative extraction texte natif
             native = page.get_text("text").strip()
             if native and len(native) > 50:
-                full_text += native + "\n"
+                parts.append(native)
             else:
                 # Fallback OCR sur image
                 pix = page.get_pixmap(dpi=300)
-                img = Image.open(io.BytesIO(pix.tobytes()))
-                img = preprocess_image(img)
-                ocr_text = pytesseract.image_to_string(img, lang='fra', config='--psm 6')
-                full_text += ocr_text + "\n"
+                page_img = Image.open(io.BytesIO(pix.tobytes()))
+                page_img = preprocess_image(page_img)
+                ocr_text = pytesseract.image_to_string(page_img, lang='fra', config='--psm 6')
+                parts.append(ocr_text)
         doc.close()
     except Exception as e:
         logging.error(f"Erreur extraction texte sur {pdf_path}: {e}")
-    return full_text
+    return "\n".join(parts)
 
 # ---------------------------------------------------------------------------
 # PARSING — FIX FUNC-01, FUNC-03, REGEX-01
@@ -252,13 +252,13 @@ def parse_invoice_text(text):
         text
     )
     if m_ttc:
-        raw = m_ttc.group(1).strip()
-        data["montant_ttc"] = re.sub(r'[\s.](?=\d{3})', '', raw)  # retire séparateur milliers
+        amount_raw = m_ttc.group(1).strip()
+        data["montant_ttc"] = re.sub(r'[\s.](?=\d{3})', '', amount_raw)  # retire séparateur milliers
     else:
         m_mnt = re.search(_AMOUNT + r'\s*[€eE]', text)
         if m_mnt:
-            raw = m_mnt.group(1).strip()
-            data["montant_ttc"] = re.sub(r'[\s.](?=\d{3})', '', raw)
+            amount_raw = m_mnt.group(1).strip()
+            data["montant_ttc"] = re.sub(r'[\s.](?=\d{3})', '', amount_raw)
 
     if data["is_avoir"] and data["montant_ttc"] and not str(data["montant_ttc"]).startswith("-"):
         data["montant_ttc"] = "-" + str(data["montant_ttc"])
@@ -400,7 +400,7 @@ def process_pdf(filepath, original_filename=None, page_num=None):
                         wb_r.close()
                         logging.warning(f"Doublon ignoré pour {display_name}")
                         try: shutil.move(filepath, os.path.join(FOLDER_ERR, filename))
-                        except Exception: pass
+                        except Exception as mv_err: logging.warning(f"Déplacement échoué (doublon) : {mv_err}")
                         log_to_json(filepath, data, score, "DUPLICATE_SKIPPED")
                         return False
                 wb_r.close()
@@ -447,7 +447,7 @@ def process_pdf(filepath, original_filename=None, page_num=None):
     except Exception as e:
         logging.error(f"Erreur processing sur {display_name} : {e}")
         try: shutil.move(filepath, os.path.join(FOLDER_ERR, filename))
-        except Exception: pass
+        except Exception as mv_err: logging.warning(f"Déplacement vers Erreur échoué : {mv_err}")
         return False
 
 # ---------------------------------------------------------------------------
@@ -475,7 +475,7 @@ def split_and_process_pdf(filepath):
     except Exception as e:
         logging.error(f"Erreur globale sur {filename} : {e}")
         try: shutil.move(filepath, os.path.join(FOLDER_ERR, filename))
-        except Exception: pass
+        except Exception as mv_err: logging.warning(f"Déplacement vers Erreur échoué (split) : {mv_err}")
 
 # ---------------------------------------------------------------------------
 # WATCHDOG HANDLER — FIX BUG-02 : traitement dans un thread secondaire
