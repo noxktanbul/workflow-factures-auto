@@ -18,3 +18,12 @@ Erreur/*.pdf
 build/
 dist/
 *.spec
+
+# Logs et données de runtime (ne pas versionner)
+workflow.json
+workflow.log
+*.log
+*.bak
+
+# Rapports d'audit générés
+audit_report.json
