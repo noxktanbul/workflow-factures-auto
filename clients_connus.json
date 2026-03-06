@@ -1,0 +1,21 @@
+[
+    {"pattern": "PAUL RICARD",                      "client": "PAUL RICARD"},
+    {"pattern": "EXAIL",                             "client": "EXAIL"},
+    {"pattern": "FOSELEV",                           "client": "FOSELEV MARINE"},
+    {"pattern": "IME ESTEREL|ESTEREL",               "client": "IME ESTEREL"},
+    {"pattern": "BPMED|BANQUE POPULAIRE MED",        "client": "BPMED"},
+    {"pattern": "CREDIT MUTUEL|CRÉDIT MUTUEL",       "client": "CREDIT MUTUEL"},
+    {"pattern": "EURO.INFORMATION",                  "client": "EURO-INFORMATION"},
+    {"pattern": "IONOS",                             "client": "IONOS"},
+    {"pattern": "CAISSE DES DEPOTS|CAISSE DES DÉPÔTS", "client": "CPF"},
+    {"pattern": "COMPTE PERSONNEL DE FORMATION",    "client": "CPF"},
+    {"pattern": "BIANCO",                            "client": "BIANCO Stéphane"},
+    {"pattern": "MELICUCCI",                         "client": "MELICUCCI"},
+    {"pattern": "SAMAT",                             "client": "SAMAT"},
+    {"pattern": "GOLDSTEIN",                         "client": "GOLDSTEIN"},
+    {"pattern": "DI PLACIDO",                        "client": "DI PLACIDO"},
+    {"pattern": "FORDECO|CAE FORDECO",               "client": "CAE FORDECO"},
+    {"pattern": "NIEDRINGHAUS",                      "client": "NIEDRINGHAUS Sarah"},
+    {"pattern": "VARDON",                            "client": "VARDON Clément"},
+    {"pattern": "PAPOULIAS",                         "client": "PAPOULIAS Ilios"}
+]
