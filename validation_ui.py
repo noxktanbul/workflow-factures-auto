@@ -2,11 +2,10 @@ import os
 import time
 import re
 import fitz  # PyMuPDF
-import pytesseract
+from ocr_engine import extract_text
 from PIL import Image, ImageEnhance, ImageFilter, ImageTk
 import io
 import tkinter as tk
-from tkinter import messagebox, filedialog
 from openpyxl import load_workbook
 import shutil
 import logging
@@ -23,15 +22,23 @@ DPI_LOW = 150
 WIN_WIDTH = 1000
 WIN_HEIGHT = 700
 
-FOLDER_IN = os.path.join(BASE_DIR, "Entrant")
-FOLDER_OUT = os.path.join(BASE_DIR, "Traite")
-FOLDER_ERR = os.path.join(BASE_DIR, "Erreur")
-EXCEL_FILE = os.path.join(BASE_DIR, "References", "Echeancier_cible.xlsx")
+FOLDER_IN  = os.path.join(BASE_DIR, "1_Entrant_Deposer_PDF")
+FOLDER_OUT = os.path.join(BASE_DIR, "2_Traite_Succes")
+FOLDER_ERR = os.path.join(BASE_DIR, "3_Erreur_A_Verifier")
+
+# Mêmes 4 candidats que main_watcher.py
+_excel_candidates = [
+    os.path.join(os.path.dirname(BASE_DIR), "\u00e9ch\u00e9ancier factures ventes", "Echeancier_cible.xlsx"),  # PROD
+    os.path.join(BASE_DIR, "Echeancier_cible.xlsx"),
+    os.path.join(os.path.dirname(BASE_DIR), "Echeancier_cible.xlsx"),
+    os.path.join(BASE_DIR, "References", "Echeancier_cible.xlsx"),
+]
+EXCEL_FILE = next((p for p in _excel_candidates if os.path.exists(p)), _excel_candidates[0])
 
 logging.basicConfig(filename=os.path.join(BASE_DIR, "workflow.log"), level=logging.INFO,
                     format='%(asctime)s - %(levelname)s - %(message)s')
 
-pytesseract.pytesseract.tesseract_cmd = r'C:\Tesseract-OCR\tesseract.exe'
+# OCR Engine (EasyOCR via ocr_engine.py)
 
 def preprocess_image(img):
     img = img.convert('L')
@@ -55,7 +62,7 @@ def extract_text_and_first_page_image(pdf_path):
 
             # OCR is done on 300dpi internally usually, but 150dpi here for speed during UI
             img_ocr = preprocess_image(pil_img)
-            text = pytesseract.image_to_string(img_ocr, lang='fra')
+            text = extract_text(img_ocr)
             texts.append(text)
     except Exception as e:
         logging.error(f"Erreur OCR sur {pdf_path}: {e}")
@@ -120,7 +127,11 @@ def inject_to_excel(data):
 
     try:
         wb = load_workbook(EXCEL_FILE)
-        ws = wb.active
+        try:
+            ws = wb["Ventes_Factures"]
+        except KeyError:
+            ws = wb.active
+            logging.warning("Onglet 'Ventes_Factures' introuvable, utilisation de l'onglet actif")
 
         if check_duplicate(ws, data.get("num_facture")):
             wb.close()
@@ -132,19 +143,21 @@ def inject_to_excel(data):
                 found_row = r
                 break
 
-        ws[f"A{found_row}"] = data["num_facture"]
-        ws[f"B{found_row}"] = data["client"]
-        ws[f"C{found_row}"] = "B2B"
-        ws[f"E{found_row}"] = data["session"]
-        ws[f"F{found_row}"] = data["date_facture"]
-        ws[f"G{found_row}"] = data["date_echeance"]
+        ws[f"A{found_row}"] = data.get("num_facture", "")
+        ws[f"B{found_row}"] = data.get("client", "")
+        ws[f"C{found_row}"] = data.get("type_facture", "B2B")
+        ws[f"E{found_row}"] = data.get("session", "")
+        ws[f"F{found_row}"] = data.get("date_facture", "")
+        ws[f"G{found_row}"] = data.get("date_echeance", "")
 
-        if data["montant_ttc"]:
+        mnt_raw = data.get("montant_ttc", "")
+        if mnt_raw not in (None, ""):
             try:
-                mnt = float(data["montant_ttc"].replace(',', '.'))
+                # Accepte float (depuis main) ou string avec virgule (saisie UI)
+                mnt = float(str(mnt_raw).replace(',', '.').replace(' ', ''))
                 ws[f"H{found_row}"] = mnt
-            except ValueError:
-                ws[f"H{found_row}"] = data["montant_ttc"]
+            except (ValueError, TypeError):
+                ws[f"H{found_row}"] = mnt_raw
 
         wb.save(EXCEL_FILE)
         wb.close()
@@ -230,67 +243,89 @@ class ValidationUI:
         self.status = "REJECT"
         self.root.destroy()
 
-def process_with_ui(pdf_path):
-    print(f"Lancement de l'UI pour: {os.path.basename(pdf_path)}")
-    text, extracted_img = extract_text_and_first_page_image(pdf_path)
-    data = parse_invoice_text(text)
+def process_with_ui(pdf_path, prefilled_data=None):
+    """
+    Ouvre l'UI de validation pour une page de facture.
 
-    # Bloquant jusqu'à la fermeture de la fenêtre
+    Args:
+        pdf_path: Chemin vers le PDF source (pour l'aperçu image).
+        prefilled_data: dict de données pré-extraites par main_watcher.py.
+                        Si None, l'UI extrait elle-même (appel standalone).
+
+    Returns:
+        tuple (status, final_data)
+            - status   : "SUCCESS" | "REJECT" | "CANCEL"
+            - final_data : dict des données validées/corrigées par l'utilisateur
+                          (None si rejet/cancel)
+        Note: le déplacement du fichier PDF est géré par l'appelant (process_pdf),
+        PAS par cette fonction. L'injection Excel est faite ici uniquement si
+        appelée en mode standalone (__main__).
+    """
+    logging.info(f"[UI] Ouverture validation pour: {os.path.basename(pdf_path)}")
+
+    # Récupération de l'image de prévisualisation (première page)
+    _, extracted_img = extract_text_and_first_page_image(pdf_path)
+
+    # Données à pré-remplir : priorité aux données passées en paramètre
+    if prefilled_data is not None:
+        # Convertir float → string pour affichage dans les champs texte
+        display_data = dict(prefilled_data)
+        mnt = display_data.get("montant_ttc")
+        if isinstance(mnt, float):
+            display_data["montant_ttc"] = f"{mnt:.2f}".replace('.', ',')
+        # Convertir dates datetime.date → string
+        import datetime as _dt
+        for k in ("date_facture", "date_echeance"):
+            v = display_data.get(k)
+            if isinstance(v, _dt.date):
+                display_data[k] = v.strftime("%d/%m/%Y")
+        data = display_data
+    else:
+        # Mode standalone : extraire nous-mêmes
+        text, _ = extract_text_and_first_page_image(pdf_path)
+        data = parse_invoice_text(text)
+
+    # Ouverture UI — bloquant jusqu'à fermeture
     root_val = tk.Tk()
     app = ValidationUI(root_val, pdf_path, data, extracted_img)
     root_val.mainloop()
-    
-    status = app.status
-    final_data = app.final_data
-    # After UI is closed, wait a tiny bit to ensure resources free up
-    time.sleep(0.5)
+    time.sleep(0.5)  # laisser les ressources Tk se libérer
 
-    out_path = os.path.join(FOLDER_OUT, os.path.basename(pdf_path))
-    err_path = os.path.join(FOLDER_ERR, os.path.basename(pdf_path))
-
-    if status == "SUCCESS":
-        print("Validation manuelle confirmée.")
-        status = inject_to_excel(app.final_data)
-        if status == "SUCCESS":
-            try:
-                # Need absolute path move for windows sometimes
-                shutil.move(os.path.abspath(pdf_path), os.path.abspath(out_path))
-                print("Injection et déplacement OK.")
-            except Exception as e:
-                print(f"Injection ok mais erreur move : {e}")
-        elif status == "DUPLICATE":
-            print("Doublon détecté après validation. Fichier déplacé en erreur.")
-            try:
-                shutil.move(os.path.abspath(pdf_path), os.path.abspath(err_path))
-            except Exception as e:
-                print(f"Erreur move pour doublon : {e}")
-        else:
-            try:
-                shutil.move(os.path.abspath(pdf_path), os.path.abspath(err_path))
-                print("Injection Echouée, fichier déplacé en erreur.")
-            except Exception as e:
-                print(f"Injection echouee et erreur move : {e}")
+    if app.status == "SUCCESS":
+        logging.info(f"[UI] Validation confirmée pour {os.path.basename(pdf_path)}")
+        # Restituer type_facture depuis prefilled_data (non affiché dans le formulaire)
+        final = dict(app.final_data)
+        if prefilled_data and "type_facture" in prefilled_data:
+            final["type_facture"] = prefilled_data["type_facture"]
+        return "SUCCESS", final
     else:
-        print("Rejet par l'utilisateur.")
-        try:
-             shutil.move(os.path.abspath(pdf_path), os.path.abspath(err_path))
-        except Exception as move_err:
-             print(f"Failed to move rejected file: {move_err}")
+        logging.info(f"[UI] Rejet par l'utilisateur pour {os.path.basename(pdf_path)}")
+        return "REJECT", None
 
 if __name__ == "__main__":
     import sys
     if len(sys.argv) > 1:
         pdf_path = sys.argv[1]
-        if os.path.exists(pdf_path):
-            process_with_ui(pdf_path)
-        else:
-            print(f"Fichier introuvable : {pdf_path}")
     else:
-        # Test file for UI
         test_file = os.path.join(BASE_DIR, "References", "Factures ventes non réglées part.3.pdf")
-        if os.path.exists(test_file):
-            test_copy = os.path.join(FOLDER_IN, "Test_UI_3.pdf")
-            shutil.copy(test_file, test_copy)
-            process_with_ui(test_copy)
-        else:
+        if not os.path.exists(test_file):
             print("Fichier de test introuvable.")
+            sys.exit(1)
+        pdf_path = os.path.join(FOLDER_IN, "Test_UI_3.pdf")
+        shutil.copy(test_file, pdf_path)
+
+    if not os.path.exists(pdf_path):
+        print(f"Fichier introuvable : {pdf_path}")
+        sys.exit(1)
+
+    status, final_data = process_with_ui(pdf_path)
+    if status == "SUCCESS" and final_data:
+        result = inject_to_excel(final_data)
+        print(f"Injection : {result}")
+        dest = FOLDER_OUT if result == "SUCCESS" else FOLDER_ERR
+        try:
+            shutil.move(os.path.abspath(pdf_path), os.path.join(dest, os.path.basename(pdf_path)))
+        except Exception as e:
+            print(f"Erreur déplacement : {e}")
+    else:
+        print("Rejet ou annulation — aucune injection.")
