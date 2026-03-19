@@ -75,21 +75,23 @@ def extract_text(pil_image):
         return _fallback_tesseract(pil_image)
 
 
-def _group_into_lines(results, y_tolerance=15):
+def _group_into_lines(results, y_tolerance=25):
     """
     Regroupe les détections EasyOCR en lignes de texte cohérentes.
     EasyOCR retourne des mots/blocs individuels qu'il faut ré-assembler.
-    
+
     Args:
         results: Liste de (bbox, text, confidence) depuis EasyOCR
-        y_tolerance: Tolérance verticale pour considérer deux textes sur la même ligne (augmentée pour compenser les légers décalages)
-    
+        y_tolerance: Tolérance verticale pour considérer deux textes sur la même ligne.
+                     25px par défaut — calibré pour les PDFs de facturation Tauroentum
+                     (compense les légers décalages verticaux de l'OCR sur texte scanné).
+
     Returns:
         Liste de strings (une par ligne)
     """
     if not results:
         return []
-    
+
     # Prétraitement : Nettoyage des dates mal lues (espaces au milieu des "/" ou ".")
     import re
     cleaned_results = []
@@ -102,12 +104,11 @@ def _group_into_lines(results, y_tolerance=15):
     lines = []
     current_line = []
     current_y = results[0][0][0][1]  # Y du premier résultat
-    
+
     for bbox, text, conf in results:
         y = bbox[0][1]  # Y du coin supérieur gauche
-        
-        # Tolérance augmentée de 15 à 25 pour éviter de couper une ligne en deux (ex: client sur deux niveaux d'OCR)
-        if abs(y - current_y) > 25:
+
+        if abs(y - current_y) > y_tolerance:
             # Nouvelle ligne
             if current_line:
                 # Trier par X dans la ligne

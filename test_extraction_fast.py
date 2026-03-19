@@ -2,11 +2,13 @@ import os
 import re
 import fitz  # PyMuPDF
 import json
-import pytesseract
 from PIL import Image, ImageEnhance, ImageFilter
 import io
 
-pytesseract.pytesseract.tesseract_cmd = r'C:\Tesseract-OCR\tesseract.exe'
+# OCR via ocr_engine (EasyOCR)
+import sys
+sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+from ocr_engine import extract_text
 
 DPI_HIGH = 300
 
@@ -56,7 +58,7 @@ try:
     page = doc.load_page(1) # Page 2
     pix = page.get_pixmap(dpi=DPI_HIGH)
     img = Image.open(io.BytesIO(pix.tobytes()))
-    text = pytesseract.image_to_string(img, lang='fra')
+    text = extract_text(img)
     doc.close()
 
     print("EXTRACTION BRUTE PAGE 1:")

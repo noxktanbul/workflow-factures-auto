@@ -1,20 +1,54 @@
-# Python
+# ── Python ────────────────────────────────────────────────────
 __pycache__/
-*.pyc
+*.py[cod]
 
-# Excel temporaire
+# ── Build PyInstaller ─────────────────────────────────────────
+build/
+dist/
+# NOTE : main_watcher.spec est versionné (nécessaire pour recompiler l'EXE)
+
+# ── Exécutable compilé ────────────────────────────────────────
+*.exe
+
+# ── Logs & audit runtime ──────────────────────────────────────
+workflow.log
+workflow.log.*
+workflow.json
+audit_report.json
+
+# ── Dossiers de travail temporaires ──────────────────────────
+_tmp_work/
+backups/
+
+# ── Fichiers Excel (production + lock Office) ─────────────────
+*.xlsx
+*.xlsm
 ~$*.xlsx
 ~$*.xlsm
 
-# PDF entrants/sortants
-Entrant/*.pdf
-Traite/*.pdf
-Erreur/*.pdf
+# ── PDFs (entrants, traités, erreurs, tests) ──────────────────
+*.pdf
+
+# ── Hashes traités (état runtime) ────────────────────────────
+processed_hashes.txt
+
+# ── Dossiers pipeline (contenu, pas les dossiers eux-mêmes) ──
+Entrant/*
+Traite/*
+Erreur/*
+1_Entrant_Deposer_PDF/*
+2_Traite_Succes/*
+3_Erreur_A_Verifier/*
+References/*
 !Entrant/.gitkeep
 !Traite/.gitkeep
 !Erreur/.gitkeep
 
-# PyInstaller
-build/
-dist/
-*.spec
+# ── Environnements virtuels ───────────────────────────────────
+.venv/
+venv/
+env/
+
+# ── OS ────────────────────────────────────────────────────────
+Thumbs.db
+desktop.ini

@@ -62,10 +62,10 @@ CLIENTS_CONNUS = [
     "NAVY SERVICE",
     "NEKTON",
     "OLYMPIQUE LYONNAIS SASU",
+    "OCAPIAT",
     "OPCO 2i",
     "OPCO MOBILITES",
     "PHARES ET BALISES",
-    "POLE TAUROENTUM",
     "PONCHARREAU-AMSELLEM",
     "PORQUEROLLES MARINE SERVICES",
     "REGION",
@@ -158,8 +158,15 @@ def match_client(ocr_name):
         if client_norm in ocr_norm or ocr_norm in client_norm:
             score = len(min(client_norm, ocr_norm, key=len)) / len(max(client_norm, ocr_norm, key=len))
             if score > FUZZY_THRESHOLD:
-                logger.info(f"Client match (contenu): '{ocr_clean}' → '{client}' (score={score:.2f})")
                 return client, score, True
+
+    # 2b) Le nom OCR est-il le premier mot (acronyme) d'un client connu ?
+    # ex: "TLV" → "TLV Transports Maritimes..."
+    if len(ocr_norm.split()) == 1 and len(ocr_norm) >= 2:
+        for client in CLIENTS_CONNUS:
+            first_word = _normalize(client).split()[0]
+            if first_word == ocr_norm:
+                return client, 0.80, True
     
     # 3) Fuzzy matching — trouver le meilleur candidat via RapidFuzz
     normalized_clients = [_normalize(c) for c in CLIENTS_CONNUS]
@@ -177,12 +184,7 @@ def match_client(ocr_name):
     best_match = CLIENTS_CONNUS[result[2]]
     best_score = result[1] / 100.0
 
-    if best_score >= FUZZY_HIGH_CONFIDENCE:
-        logger.info(f"Client corrigé (haute confiance): '{ocr_clean}' → '{best_match}' (score={best_score:.2f})")
-        return best_match, best_score, True
-    else:
-        logger.info(f"Client corrigé (confiance moyenne): '{ocr_clean}' → '{best_match}' (score={best_score:.2f})")
-        return best_match, best_score, True
+    return best_match, best_score, True
 
 
 def get_all_clients():

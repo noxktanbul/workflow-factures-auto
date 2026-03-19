@@ -1,6 +1,8 @@
 watchdog
 PyMuPDF
-pytesseract
+easyocr
+numpy
 Pillow
 openpyxl
+rapidfuzz
 win10toast

@@ -2,12 +2,13 @@ import os
 import re
 import fitz  # PyMuPDF
 import json
-import pytesseract
 from PIL import Image
 import io
 
-# Configurer le chemin de tesseract (vu dans l'audit)
-pytesseract.pytesseract.tesseract_cmd = r'C:\Tesseract-OCR\tesseract.exe'
+# OCR via ocr_engine (EasyOCR)
+import sys
+sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+from ocr_engine import extract_text
 
 DPI_HIGH = 300
 
@@ -23,7 +24,7 @@ def extract_text_from_scanned_pdf(pdf_path):
             img = Image.open(io.BytesIO(pix.tobytes()))
 
             # OCR en français
-            text = pytesseract.image_to_string(img, lang='fra')
+            text = extract_text(img)
             texts.append(text)
         doc.close()
         full_text = "\n".join(texts) + "\n" if texts else ""

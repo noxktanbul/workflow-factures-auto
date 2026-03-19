@@ -1,6 +1,5 @@
 import os
 import time
-import re
 import fitz  # PyMuPDF
 from ocr_engine import extract_text
 from PIL import Image, ImageEnhance, ImageFilter, ImageTk
@@ -22,9 +21,18 @@ DPI_LOW = 150
 WIN_WIDTH = 1000
 WIN_HEIGHT = 700
 
-FOLDER_IN  = os.path.join(BASE_DIR, "1_Entrant_Deposer_PDF")
-FOLDER_OUT = os.path.join(BASE_DIR, "2_Traite_Succes")
-FOLDER_ERR = os.path.join(BASE_DIR, "3_Erreur_A_Verifier")
+def _find_folder(base, *candidates):
+    for name in candidates:
+        p = os.path.join(base, name)
+        if os.path.isdir(p):
+            return p
+    p = os.path.join(base, candidates[0])
+    os.makedirs(p, exist_ok=True)
+    return p
+
+FOLDER_IN  = _find_folder(BASE_DIR, "1_Entrant_Deposer_PDF", "Entrant")
+FOLDER_OUT = _find_folder(BASE_DIR, "2_Traite_Succes", "Traite")
+FOLDER_ERR = _find_folder(BASE_DIR, "3_Erreur_A_Verifier", "Erreur")
 
 # Mêmes 4 candidats que main_watcher.py
 _excel_candidates = [
@@ -35,8 +43,12 @@ _excel_candidates = [
 ]
 EXCEL_FILE = next((p for p in _excel_candidates if os.path.exists(p)), _excel_candidates[0])
 
-logging.basicConfig(filename=os.path.join(BASE_DIR, "workflow.log"), level=logging.INFO,
-                    format='%(asctime)s - %(levelname)s - %(message)s')
+# La configuration du logger est gérée par main_watcher.py (RotatingFileHandler).
+# En mode standalone (__main__), configurer un handler minimal si aucun n'est actif.
+if not logging.getLogger().handlers:
+    logging.basicConfig(filename=os.path.join(BASE_DIR, "workflow.log"), level=logging.INFO,
+                        format='%(asctime)s - %(levelname)s - %(message)s',
+                        encoding='utf-8')
 
 # OCR Engine (EasyOCR via ocr_engine.py)
 
@@ -74,43 +86,21 @@ def extract_text_and_first_page_image(pdf_path):
         full_text = "\n".join(texts) + "\n" if texts else ""
     return full_text, first_page_img
 
-def parse_invoice_text(text):
-    data = {"num_facture": "", "client": "", "date_facture": "", "date_echeance": "", "montant_ttc": "", "session": ""}
+def extract_page_image(pdf_path, page_num):
+    """Retourne l'image PIL de la page demandée (0-indexé) du PDF."""
+    try:
+        doc = fitz.open(pdf_path)
+        idx = min(page_num, len(doc) - 1)
+        page = doc.load_page(idx)
+        pix = page.get_pixmap(dpi=DPI_LOW)
+        img = Image.open(io.BytesIO(pix.tobytes())).copy()
+        doc.close()
+        return img
+    except Exception as e:
+        logging.error(f"Erreur aperçu page {page_num} de {pdf_path}: {e}")
+        return None
 
-    # TAU_2026-413
-    m_facture = re.search(r'(?i)(TAU_\d{4}[\-\_]\d+)', text)
-    if m_facture: data["num_facture"] = m_facture.group(1).strip()
-
-    all_dates = re.findall(r'(\d{2}[/.\-]\d{2}[/.\-]\d{4})', text)
-    if all_dates:
-        data["date_facture"] = all_dates[0]
-
-    m_echeance = re.search(r'(?i)(?:échéance|echeance|règlement|limite)\s*.*?(?:\d{2}[/.\-]\d{2}[/.\-]\d{4})', text)
-    if m_echeance:
-         dates = re.findall(r'(\d{2}[/.\-]\d{2}[/.\-]\d{4})', m_echeance.group(0))
-         if dates: data["date_echeance"] = dates[-1]
-    elif len(all_dates) > 1:
-         data["date_echeance"] = all_dates[-1]
-
-    m_session = re.search(r'(?i)Session(?:\s*du)?\s*(\d{2}[/.\-]\d{2}[/.\-]\d{4}\s*au\s*\d{2}[/.\-]\d{2}[/.\-]\d{4})', text)
-    if m_session: data["session"] = m_session.group(1).strip()
-
-    m_client = re.search(r'(?i)SOCIETE\s*([^\n\r]+)', text)
-    if m_client: data["client"] = m_client.group(1).strip()
-
-    m_ttc_explicit = re.search(r'(?i)(?:Total\s*TTC|TTC|Net\s*à\s*payer).*?([\d\s]+[,.]\d{2})(?:\s*€|\s*EUR)?', text)
-    if m_ttc_explicit:
-        data["montant_ttc"] = m_ttc_explicit.group(1).replace(' ', '').strip()
-    else:
-        amounts = re.findall(r'([\d\s]+[,.]\d{2})\s*(?:€|EUR)', text)
-        if amounts:
-            try:
-                clean_amounts = [float(a.replace(' ', '').replace(',', '.')) for a in amounts]
-                data["montant_ttc"] = f"{max(clean_amounts):.2f}".replace('.', ',')
-            except ValueError:
-                data["montant_ttc"] = amounts[-1].replace(' ', '').strip()
-
-    return data
+# parse_invoice_text est fourni par main_watcher (import local pour éviter la circularité)
 
 def check_duplicate(ws, num_facture):
     if not num_facture:
@@ -235,15 +225,40 @@ class ValidationUI:
         tk.Button(btn_frame, text="Rejeter", command=self.on_reject, bg="salmon", height=2).pack(side=tk.RIGHT, expand=True, fill=tk.X, padx=5)
 
     def on_validate(self):
-        self.final_data = {key: var.get() for key, var in self.entries.items()}
+        import re as _re
+        raw = {key: var.get().strip() for key, var in self.entries.items()}
+        errors = []
+
+        mnt_raw = raw.get("montant_ttc", "")
+        if mnt_raw:
+            try:
+                float(mnt_raw.replace(',', '.').replace(' ', ''))
+            except ValueError:
+                errors.append("Montant TTC invalide (exemple attendu : 1 200,00)")
+
+        for field, label in [("date_facture", "Date Facture"),
+                              ("date_echeance", "Date Échéance")]:
+            val = raw.get(field, "")
+            if val and not _re.match(r'^\d{2}[/.\-]\d{2}[/.\-]\d{4}$', val):
+                errors.append(f"{label} invalide (format attendu : JJ/MM/AAAA)")
+
+        if errors:
+            from tkinter import messagebox
+            messagebox.showerror("Données invalides", "\n".join(errors))
+            return
+
+        self.final_data = raw
         self.status = "SUCCESS"
         self.root.destroy()
 
     def on_reject(self):
-        self.status = "REJECT"
-        self.root.destroy()
+        from tkinter import messagebox
+        if messagebox.askyesno("Confirmer le rejet",
+                               "Ignorer cette facture ?\nElle ne sera pas injectée dans Excel."):
+            self.status = "REJECT"
+            self.root.destroy()
 
-def process_with_ui(pdf_path, prefilled_data=None):
+def process_with_ui(pdf_path, prefilled_data=None, page_num=0):
     """
     Ouvre l'UI de validation pour une page de facture.
 
@@ -261,10 +276,10 @@ def process_with_ui(pdf_path, prefilled_data=None):
         PAS par cette fonction. L'injection Excel est faite ici uniquement si
         appelée en mode standalone (__main__).
     """
-    logging.info(f"[UI] Ouverture validation pour: {os.path.basename(pdf_path)}")
+    logging.info(f"[UI] Ouverture validation pour: {os.path.basename(pdf_path)} (page {page_num + 1})")
 
-    # Récupération de l'image de prévisualisation (première page)
-    _, extracted_img = extract_text_and_first_page_image(pdf_path)
+    # Récupération de l'image de prévisualisation — page de la facture concernée
+    extracted_img = extract_page_image(pdf_path, page_num)
 
     # Données à pré-remplir : priorité aux données passées en paramètre
     if prefilled_data is not None:
@@ -281,9 +296,10 @@ def process_with_ui(pdf_path, prefilled_data=None):
                 display_data[k] = v.strftime("%d/%m/%Y")
         data = display_data
     else:
-        # Mode standalone : extraire nous-mêmes
+        # Mode standalone : extraire et parser via main_watcher (source unique de vérité)
+        from main_watcher import parse_invoice_text as _parse
         text, _ = extract_text_and_first_page_image(pdf_path)
-        data = parse_invoice_text(text)
+        data = _parse(text)
 
     # Ouverture UI — bloquant jusqu'à fermeture
     root_val = tk.Tk()

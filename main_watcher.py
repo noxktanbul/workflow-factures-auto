@@ -21,6 +21,11 @@ from client_dictionary import match_client
 # Tkinter DOIT s'exécuter depuis le thread principal (contrainte Windows).
 # Le thread watchdog enfile les chemins PDF ; le thread principal les traite.
 _pdf_queue = queue.Queue()
+# Set thread-safe des fichiers déjà enfilés ou en cours de traitement
+# (évite le double-enfilage watchdog qui déclenche parfois 2 événements)
+import threading
+_processing_lock = threading.Lock()
+_files_seen = set()
 try:
     from win10toast import ToastNotifier
     toaster = ToastNotifier()
@@ -28,13 +33,21 @@ except ImportError:
     toaster = None
 
 import sys
+import argparse
 
 if getattr(sys, 'frozen', False):
     BASE_DIR = os.path.dirname(sys.executable)
 else:
     BASE_DIR = os.path.dirname(os.path.abspath(__file__))
 
-DPI_HIGH = 150
+# ── Mode test (--dry-run) ──────────────────────────────────────
+_parser = argparse.ArgumentParser(add_help=False)
+_parser.add_argument("--dry-run", action="store_true",
+                     help="Traite les PDFs sans écrire dans Excel ni déplacer les fichiers")
+_args, _ = _parser.parse_known_args()
+DRY_RUN = _args.dry_run
+
+DPI_HIGH = 200
 
 # Détection automatique du nommage des dossiers (deux conventions possibles)
 def _find_folder(base, *candidates):
@@ -47,9 +60,10 @@ def _find_folder(base, *candidates):
     os.makedirs(p, exist_ok=True)
     return p
 
-FOLDER_IN  = _find_folder(BASE_DIR, "1_Entrant_Deposer_PDF", "Entrant")
-FOLDER_OUT = _find_folder(BASE_DIR, "2_Traite_Succes", "Traite")
-FOLDER_ERR = _find_folder(BASE_DIR, "3_Erreur_A_Verifier", "Erreur")
+FOLDER_IN     = _find_folder(BASE_DIR, "1_Entrant_Deposer_PDF", "Entrant")
+FOLDER_OUT    = _find_folder(BASE_DIR, "2_Traite_Succes", "Traite")
+FOLDER_ERR    = _find_folder(BASE_DIR, "3_Erreur_A_Verifier", "Erreur")
+FOLDER_BACKUP = _find_folder(BASE_DIR, "backups")
 
 # Recherche du fichier Excel dans plusieurs emplacements candidats
 _excel_candidates = [
@@ -61,8 +75,22 @@ _excel_candidates = [
 EXCEL_FILE = next((p for p in _excel_candidates if os.path.exists(p)), _excel_candidates[0])
 
 # Log config
-logging.basicConfig(filename=os.path.join(BASE_DIR, "workflow.log"), level=logging.INFO,
-                    format='%(asctime)s - %(levelname)s - %(message)s')
+import hashlib
+from logging.handlers import RotatingFileHandler as _RotatingFileHandler
+_log_handler = _RotatingFileHandler(
+    os.path.join(BASE_DIR, "workflow.log"),
+    maxBytes=5 * 1024 * 1024,  # 5 MB
+    backupCount=3,
+    encoding='utf-8'
+)
+_log_formatter = logging.Formatter('%(asctime)s - %(levelname)s - %(message)s')
+_log_handler.setFormatter(_log_formatter)
+_console_handler = logging.StreamHandler()
+_console_handler.setFormatter(_log_formatter)
+root_logger = logging.getLogger()
+root_logger.addHandler(_log_handler)
+root_logger.addHandler(_console_handler)
+root_logger.setLevel(logging.INFO)
 
 # OCR Engine (EasyOCR via ocr_engine.py)
 
@@ -94,6 +122,8 @@ FOOTER_PATTERNS = [
     r'(?i)article.*L?5362',
     r'(?i)article.*261',
     r'(?i)pr[ée]fet\s+de\s+la\s+r[ée]gion',
+    r'(?i)restant\s+du',      # solde client ≠ montant TTC
+    r'(?i)encaissement',      # ligne acompte/avoir
 ]
 
 
@@ -181,18 +211,31 @@ def string_to_date(date_str):
 
 
 def clean_montant(m_str):
-    s = str(m_str).replace(' ', '').replace('€', '').replace('EUR', '')
+    s = str(m_str).strip()
+    # Supprimer les symboles monétaires et espaces insécables
+    s = s.replace('\xa0', ' ').replace('€', '').replace('EUR', '').replace('eur', '')
     # Correction artefacts OCR : lettres O/o lues à la place de 0 dans les décimales
     # ex: "465.OO" -> "465.00", "0.0o" -> "0.00"
     s = re.sub(r'(?<=[.,\d])[Oo]', '0', s)
     s = re.sub(r'[Oo](?=[.,\d])', '0', s)
+    # Détecter le séparateur décimal réel et gérer les espaces-milliers
+    # Cas "2 800,00" ou "2 800.00" : espace = séparateur milliers
+    # Cas "2.800,00" : point = séparateur milliers, virgule = décimal
+    # Cas "2,800.00" : virgule = séparateur milliers, point = décimal
+    s = s.strip()
     if ',' in s and '.' in s:
         if s.rfind(',') > s.rfind('.'):
-            s = s.replace('.', '').replace(',', '.')
+            # ex: "2.800,00" → point=milliers, virgule=décimal
+            s = s.replace('.', '').replace(' ', '').replace(',', '.')
         else:
-            s = s.replace(',', '')
+            # ex: "2,800.00" → virgule=milliers, point=décimal
+            s = s.replace(',', '').replace(' ', '')
     elif ',' in s:
-        s = s.replace(',', '.')
+        # ex: "2 800,00" ou "2800,00" → virgule=décimal
+        s = s.replace(' ', '').replace(',', '.')
+    else:
+        # ex: "2 800.00" ou "2800.00" → point=décimal
+        s = s.replace(' ', '')
     try:
         return float(s)
     except Exception:
@@ -202,22 +245,79 @@ def clean_montant(m_str):
 def _is_junk_line(line):
     """Retourne True si la ligne fait partie de l'entête Pôle Tauroentum ou est une adresse."""
     lower = line.lower()
+
+    # Exception : une ligne entièrement en MAJUSCULES (≥4 lettres) est probablement
+    # un nom de société → ne jamais la rejeter via les filtres génériques ci-dessous.
+    # (On laisse quand même passer le filtre JUNK_WORDS qui est spécifique à l'émetteur.)
+    letters_only = re.sub(r'[^A-Za-zÀ-ÿ]', '', line)
+    is_all_caps = len(letters_only) >= 4 and letters_only == letters_only.upper()
+
     for junk in JUNK_WORDS:
         if junk in lower:
             return True
-    # Code postal (5 chiffres + espace)
-    if re.search(r'\d{5}\s', line):
+
+    if is_all_caps:
+        # Pour une ligne tout-caps, on ne filtre que les adresses et codes postaux explicites
+        if re.search(r'\d{5}', line):          # code postal seul = ville
+            return True
+        if re.search(r'\b(RUE|AVENUE|BOULEVARD|CHEMIN|ROUTE|ALLEE|IMPASSE)\b', line):
+            return True
+        return False  # Nom de société présumé → conserver
+
+    # Code postal (5 chiffres + espace ou fin de ligne)
+    if re.search(r'\d{5}[\s$]', line):
         return True
     # Adresse (rue, avenue, etc.)
     if re.search(r'\b(rue|avenue|boulevard|chemin|route|allée|impasse|zi|z\.i|za|z\.a|bp)\b', lower):
         return True
     # Ligne trop courte (<4 lettres utiles)
-    if len(re.sub(r'[^A-Za-zÀ-ÿ]', '', line)) < 4:
+    if len(letters_only) < 4:
         return True
     # Date seule
     if re.match(r'^\d{2}[/.\-]\d{2}[/.\-]\d{4}', line.strip()):
         return True
+    # Ligne de description de prestation (pas un nom de client)
+    if re.search(r'\b(formation|session|durée|duree|stage|module|intitulé|intitule|'
+                 r'prestation|programme|objectif|stagiaire)\b', lower):
+        return True
     return False
+
+
+def _extract_client_from_allcaps(lines, max_line=None):
+    """
+    Cherche dans `lines` (limité aux max_line premières si précisé)
+    la première ligne entièrement en MAJUSCULES qui n'est pas du junk
+    et qui est potentiellement un nom de société.
+    Retourne le candidat ou None.
+    """
+    search_lines = lines[:max_line] if max_line else lines
+    for line in search_lines:
+        candidate = line.strip()
+        if not candidate:
+            continue
+        letters = re.sub(r'[^A-Za-zÀ-ÿ]', '', candidate)
+        if len(letters) < 3:
+            continue
+        # Doit être tout en majuscules
+        if letters != letters.upper():
+            continue
+        # Ne pas prendre les mots-clés parasites de l'émetteur
+        lower = candidate.lower()
+        if any(junk in lower for junk in JUNK_WORDS):
+            continue
+        # Pas une adresse
+        if re.search(r'\b(RUE|AVENUE|BOULEVARD|CHEMIN|ROUTE|ALLEE|IMPASSE)\b', candidate):
+            continue
+        if re.search(r'\d{5}', candidate):
+            continue
+        # Pas une date seule
+        if re.match(r'^\d{2}[/.\-]\d{2}[/.\-]\d{4}', candidate.strip()):
+            continue
+        # Pas un numéro de facture
+        if re.search(r'TAU_\d', candidate):
+            continue
+        return candidate
+    return None
 
 
 def parse_invoice_text(text):
@@ -271,10 +371,18 @@ def parse_invoice_text(text):
             data["date_echeance"] = valid_dates[0] + datetime.timedelta(days=30)
 
     # ─── 3) Session ──────────────────────────────────────────────
+    # Formats supportés :
+    #   "Session du 16/03/2026 au 16/03/2026"
+    #   "Session 16/03/2026 au 16/03/2026"
+    #   "Session du 16.03.2026 au 16.03.2026"  (OCR peut mettre des points)
+    #   Dates avec espaces OCR : "16 / 03 / 2026"
+    _date_pat = r'\d{2}\s*[/.\-]\s*\d{2}\s*[/.\-]\s*\d{4}'
     m_session = re.search(
-        r'(?i)Session(?:\s*du)?\s*(\d{2}[/.\-]\d{2}[/.\-]\d{4}\s*au\s*\d{2}[/.\-]\d{2}[/.\-]\d{4})', text)
+        r'(?i)Session\s+(?:du\s+)?(' + _date_pat + r')\s+au\s+(' + _date_pat + r')', text)
     if m_session:
-        data["session"] = m_session.group(1).strip()
+        d1 = re.sub(r'\s', '', m_session.group(1))
+        d2 = re.sub(r'\s', '', m_session.group(2))
+        data["session"] = f"{d1} au {d2}"
 
     # ─── 4) TYPE (CPF / CDC / B2B) — détecté SUR TOUT LE TEXTE ─
     text_lower = text.lower()
@@ -283,7 +391,7 @@ def parse_invoice_text(text):
     elif re.search(r'caisse\s+des\s+d.p.ts', text_lower):
         data["type_facture"] = "CDC"
 
-    # ─── 5) CLIENT — recherche inversée depuis le TAU_ ──────────
+    # ─── 5) CLIENT — extraction multi-passes ────────────────────
     client_name = None
     tau_index = -1
     for i, l in enumerate(lines):
@@ -291,25 +399,58 @@ def parse_invoice_text(text):
             tau_index = i
             break
 
-    if tau_index > 0:
-        # Remonter les lignes au-dessus du TAU_ pour trouver le nom du client
+    # Passe 0 : fuzzy matching sur les lignes tout-MAJUSCULES du document
+    # (le bloc destinataire OCR peut être n'importe où — cette passe l'attrape)
+    # On limite au premier 40% du document pour éviter les lignes de bas de page.
+    top_limit = max(tau_index + 5, len(lines) * 2 // 5) if tau_index >= 0 else len(lines) * 2 // 5
+    allcaps_candidates = []
+    for line in lines[:top_limit]:
+        candidate = line.strip()
+        letters = re.sub(r'[^A-Za-zÀ-ÿ]', '', candidate)
+        if len(letters) < 3:
+            continue
+        if letters != letters.upper():
+            continue
+        if any(junk in candidate.lower() for junk in JUNK_WORDS):
+            continue
+        if re.search(r'\d{5}', candidate):
+            continue
+        if re.search(r'\b(RUE|AVENUE|BOULEVARD|CHEMIN|ROUTE|ALLEE|IMPASSE)\b', candidate):
+            continue
+        if re.match(r'^\d{2}[/.\-]\d{2}[/.\-]\d{4}', candidate.strip()):
+            continue
+        if re.search(r'TAU_\d', candidate):   # numéro de facture ≠ client
+            continue
+        allcaps_candidates.append(candidate)
+
+    # Tenter un fuzzy match sur chaque candidat tout-caps : prendre le meilleur score ≥ 0.65
+    best_caps_match = None
+    best_caps_score = 0.0
+    for candidate in allcaps_candidates:
+        corrected, score, _ = match_client(candidate)
+        if score >= 0.65 and score > best_caps_score:
+            best_caps_score = score
+            best_caps_match = (candidate, corrected, score)
+
+    if best_caps_match:
+        client_name = best_caps_match[0]  # conserve le nom brut pour la suite (fuzzy appliqué après)
+
+    # Passe 1 : remonter les lignes au-dessus du TAU_
+    if not client_name and tau_index > 0:
         for i in range(tau_index - 1, max(-1, tau_index - 10), -1):
             candidate = lines[i].strip()
             if _is_junk_line(candidate):
                 continue
-            # C'est probablement le client
-            # Nettoyage des artefacts OCR courants
             candidate = re.sub(r'[_\(\)\[\]{}]', '', candidate).strip()
             candidate = re.sub(r'\beŸ\b', '', candidate).strip()
             if len(candidate) >= 3:
                 client_name = candidate
                 break
 
-    # Fallback A: forme juridique sur les lignes avant TAU_ (même celles avec adresse)
+    # Fallback A: forme juridique sur les lignes avant TAU_
     if not client_name and tau_index > 0:
         for i in range(tau_index - 1, max(-1, tau_index - 15), -1):
             candidate = lines[i].strip()
-            # Chercher NOM + forme juridique (ex: "FT MARINE SAS") ou forme juridique + NOM (ex: "SARL BOYER")
             m_soc = re.search(
                 r'([A-Z][A-Z0-9 &\-\.]{1,30}\s+(?:SARL|SAS|SA|EURL|SASU|ASSOCIATION|SNC|SCOP|GIE)\b'
                 r'|(?:SARL|SAS|EURL|SASU|ASSOCIATION|SNC)\s+[A-Z][A-Z0-9 &\-\.]{2,30})',
@@ -326,16 +467,27 @@ def parse_invoice_text(text):
         if m_soc:
             client_name = m_soc.group(1).strip()
 
+    # Fallback C : première ligne tout-MAJUSCULES dans le premier tiers du document
+    if not client_name:
+        client_name = _extract_client_from_allcaps(lines, max_line=max(10, len(lines) // 3))
+
     # Si le type est CPF, le client est "CPF" (Caisse des Dépôts)
     if data["type_facture"] == "CPF":
         data["client"] = "CPF"
     elif data["type_facture"] == "CDC":
         data["client"] = "CDC"
     elif client_name:
-        # Piste A : Fuzzy matching avec le dictionnaire de clients connus
+        # Fuzzy matching avec le dictionnaire de clients connus
         corrected, score, was_corrected = match_client(client_name)
         if was_corrected:
-            logging.info(f"Client corrige: '{client_name}' -> '{corrected}' (score={score:.2f})")
+            alpha_ratio = len(re.sub(r'[^A-Za-zÀ-ÿ]', '', client_name)) / max(len(client_name), 1)
+            if alpha_ratio < 0.60:
+                logging.warning(
+                    f"Client corrigé SUSPECT (bruit OCR) : '{client_name}' -> '{corrected}' "
+                    f"(score={score:.2f}, alpha_ratio={alpha_ratio:.0%}) — validation UI requise")
+                data["_client_noise"] = True
+            else:
+                logging.info(f"Client corrige: '{client_name}' -> '{corrected}' (score={score:.2f})")
         data["client"] = corrected
 
     # ─── 6) MONTANT TTC — Extraction en 4 passes ────────────────
@@ -357,9 +509,11 @@ def parse_invoice_text(text):
     clean_text = re.sub(r'(\d)[Oo]([Oo€\s])', lambda m: m.group(0).replace('O','0').replace('o','0'), clean_text)
     clean_text = re.sub(r'(\d\.[Oo0][Oo])', lambda m: m.group(0).replace('O','0').replace('o','0'), clean_text)
 
-    # Passe 1 : "Total TTC" / "Net à payer" / "Montant" / "Restant du" explicite
+    # Passe 1 : "Total TTC" / "Net à payer" / "Montant TTC" / "Tarif" explicite
+    # Pattern de nombre : gère "2 800,00", "2.800,00", "2800.00", "465,OO", etc.
+    _num_pat = r'[\d\s]{1,10}[.,][\d\s]{1,3}(?:[.,]\d{1,2})?'
     m1 = re.search(
-        r'(?i)(?:Total\s*TTC|Net\s*[àa]\s*payer|Montant\s+TTC|Tarif|Restant\s+du|^Montant)\s*[:\-]?\s*([\d\s]+[,.\-OoZzlI]+\d*)\s*(?:€|EUR|[eë])?',
+        r'(?i)(?:Total\s*TTC|Net\s*[àa]\s*payer|Montant\s+TTC|Tarif|^Montant)\s*[:\-]?\s*(' + _num_pat + r')\s*(?:€|EUR|[eë])?',
         clean_text, re.MULTILINE)
     if m1:
         montant_val = clean_montant(m1.group(1))
@@ -396,7 +550,48 @@ def parse_invoice_text(text):
             montant_val = max(amounts)
 
     data["montant_ttc"] = montant_val
+
+    # Détection montant aberrant : < 10€ sur une facture de formation est un artefact OCR
+    # (SIRET, numéro de page, date partiellement lue comme nombre)
+    if montant_val is not None and montant_val < 10.0:
+        logging.warning(
+            f"Montant suspect détecté : {montant_val}€ (< 10€) — validation UI requise")
+        data["_montant_suspect"] = True
+
     return data
+
+
+# ── Hashes PDF déjà traités (persistés entre les runs) ────────
+_HASHES_FILE = os.path.join(BASE_DIR, "processed_hashes.txt")
+
+def _load_hashes():
+    if not os.path.exists(_HASHES_FILE):
+        return set()
+    with open(_HASHES_FILE, "r", encoding="utf-8") as f:
+        return {line.strip() for line in f if line.strip()}
+
+def _save_hash(h):
+    with open(_HASHES_FILE, "a", encoding="utf-8") as f:
+        f.write(h + "\n")
+
+def _pdf_hash(filepath):
+    h = hashlib.md5()
+    with open(filepath, "rb") as f:
+        for chunk in iter(lambda: f.read(65536), b""):
+            h.update(chunk)
+    return h.hexdigest()
+
+_processed_hashes = _load_hashes()
+
+
+# ── Backup Excel horodaté ──────────────────────────────────────
+def _backup_excel():
+    if not os.path.exists(EXCEL_FILE):
+        return
+    ts = datetime.datetime.now().strftime("%Y%m%d_%H%M%S")
+    dest = os.path.join(FOLDER_BACKUP, f"Echeancier_cible_{ts}.xlsx")
+    shutil.copy2(EXCEL_FILE, dest)
+    logging.info(f"Backup Excel créé : {os.path.basename(dest)}")
 
 
 def check_duplicate(ws, num_facture):
@@ -404,18 +599,30 @@ def check_duplicate(ws, num_facture):
         return False
     for row in range(2, ws.max_row + 2):
         cell_val = ws[f"A{row}"].value
-        if cell_val and str(cell_val).strip() == str(num_facture).strip():
+        if cell_val and str(cell_val).strip().upper() == str(num_facture).strip().upper():
             return True
     return False
 
 
 def inject_to_excel(data):
+    if DRY_RUN:
+        logging.info(f"  [DRY-RUN] Injection simulée : {data.get('num_facture')} / {data.get('client')} / {data.get('montant_ttc')}€")
+        return "SUCCESS"
+
     if not os.path.exists(EXCEL_FILE):
         logging.error("Fichier Excel introuvable.")
         return "ERROR"
 
+    _backup_excel()
+
     try:
         wb = load_workbook(EXCEL_FILE)
+        if "Ventes_Factures" not in wb.sheetnames:
+            logging.error(
+                "Onglet 'Ventes_Factures' introuvable dans le classeur Excel. "
+                "Vérifier le fichier et renommer l'onglet correctement.")
+            wb.close()
+            return "ERROR"
         ws = wb["Ventes_Factures"]
 
         num_facture_val = data.get("num_facture")
@@ -437,14 +644,20 @@ def inject_to_excel(data):
         ws[f"E{target_row}"] = data.get("session", "")
 
         dfact = data.get("date_facture")
-        if dfact and isinstance(dfact, datetime.date):
-            ws[f"F{target_row}"] = dfact
-            ws[f"F{target_row}"].number_format = 'DD/MM/YYYY'
+        if dfact:
+            if isinstance(dfact, str):
+                dfact = string_to_date(dfact)
+            if isinstance(dfact, datetime.date):
+                ws[f"F{target_row}"] = dfact
+                ws[f"F{target_row}"].number_format = 'DD/MM/YYYY'
 
         dech = data.get("date_echeance")
-        if dech and isinstance(dech, datetime.date):
-            ws[f"G{target_row}"] = dech
-            ws[f"G{target_row}"].number_format = 'DD/MM/YYYY'
+        if dech:
+            if isinstance(dech, str):
+                dech = string_to_date(dech)
+            if isinstance(dech, datetime.date):
+                ws[f"G{target_row}"] = dech
+                ws[f"G{target_row}"].number_format = 'DD/MM/YYYY'
 
         mnt = data.get("montant_ttc")
         if mnt is not None:
@@ -468,8 +681,10 @@ class InvoiceHandler(FileSystemEventHandler):
             if not os.path.exists(filepath):
                 return
             # Éviter double-enfilage (watchdog déclenche parfois deux événements)
-            if filepath in list(_pdf_queue.queue):
-                return
+            with _processing_lock:
+                if filepath in _files_seen:
+                    return
+                _files_seen.add(filepath)
             logging.info(f"Nouveau fichier détecté (enfilé) : {filepath}")
             _pdf_queue.put(filepath)
 
@@ -526,8 +741,22 @@ def calculate_confidence(data):
 def process_pdf(filepath):
     filename = os.path.basename(filepath)
     try:
+        # ── Vérification hash (doublon inter-sessions) ─────────
+        pdf_hash = _pdf_hash(filepath)
+        if pdf_hash in _processed_hashes:
+            logging.warning(f"PDF déjà traité (hash connu), ignoré : {filename}")
+            return
+
+        # ── Copie de travail dans un dossier temporaire ────────
+        tmp_dir = os.path.join(BASE_DIR, "_tmp_work")
+        os.makedirs(tmp_dir, exist_ok=True)
+        work_path = os.path.join(tmp_dir, filename)
+        shutil.copy2(filepath, work_path)
+        logging.info(f"PDF détecté : {filename}")
+        logging.info(f"Traitement en cours... (copie de travail : {work_path})")
+
         logging.info(f"Extraction du texte pour {filename}...")
-        invoice_pages = extract_invoices_by_page(filepath)
+        invoice_pages = extract_invoices_by_page(work_path)
 
         if not invoice_pages:
             logging.warning(f"Aucune facture TAU_ détectée dans {filename} - fichier ignoré")
@@ -551,11 +780,22 @@ def process_pdf(filepath):
                 # (client = "CPF", données standardisées)
                 logging.info(f"  [p.{page_num}] Facture CPF — injection directe (sans UI)")
                 status = inject_to_excel(data)
-            elif score < 7:
-                # Score insuffisant : soumettre à validation manuelle
+            elif (score < 7
+                  or data.get("_client_noise")
+                  or data.get("_montant_suspect")
+                  or data.get("montant_ttc") is None):
+                # Score insuffisant, bruit OCR client, montant aberrant, ou montant absent
+                if data.get("_client_noise"):
+                    reason = "bruit OCR client"
+                elif data.get("_montant_suspect"):
+                    reason = f"montant suspect ({data.get('montant_ttc')}€ < 10€)"
+                elif data.get("montant_ttc") is None:
+                    reason = "montant absent"
+                else:
+                    reason = f"score {score}/10 < 7"
                 logging.info(
-                    f"  [p.{page_num}] Score {score}/10 < 7 — envoi vers UI de validation")
-                ui_status, ui_data = process_with_ui(filepath, prefilled_data=data)
+                    f"  [p.{page_num}] {reason} — envoi vers UI de validation")
+                ui_status, ui_data = process_with_ui(filepath, prefilled_data=data, page_num=page_num - 1)
                 if ui_status == "SUCCESS" and ui_data:
                     # L'utilisateur a corrigé les données — on injecte ses corrections
                     status = inject_to_excel(ui_data)
@@ -579,30 +819,43 @@ def process_pdf(filepath):
                 error_count += 1
                 log_to_json(filepath, data, score, "ERROR")
 
-        # Résumé global du fichier
-        logging.info(f"BILAN {filename}: {success_count} injectées, {skip_count} doublons, {error_count} erreurs")
+        # ── Résumé final ───────────────────────────────────────
+        logging.info(
+            f"Traitement terminé : {success_count} succès / {error_count} erreurs"
+            + (f" / {skip_count} ignorés" if skip_count else "")
+            + (" [DRY-RUN]" if DRY_RUN else ""))
+
+        # Enregistrer le hash pour éviter un retraitement futur
+        if not DRY_RUN and error_count == 0:
+            _processed_hashes.add(pdf_hash)
+            _save_hash(pdf_hash)
+
+        # Nettoyage copie de travail
+        try:
+            os.remove(work_path)
+        except Exception:
+            pass
+
         if toaster:
             try:
-                # La notification Windows (win10toast) provoque un "hard-crash" silencieux
-                # lorsqu'elle est exécutée depuis un thread d'arrière-plan (watchdog) dans l'exécutable compilé.
-                # Nous désactivons temporairement ceci pour éviter la boucle de plantage.
-                # toaster.show_toast("Traitement terminé",
-                #    f"{filename}: {success_count} factures injectées, {skip_count} doublons, {error_count} erreurs",
-                #    duration=8, threaded=True)
-                pass
+                pass  # win10toast désactivé (crash silencieux en EXE)
             except Exception as e:
                 logging.warning(f"Erreur notification : {e}")
 
-        # Déplacement du fichier
-        if error_count == 0:
-            shutil.move(filepath, os.path.join(FOLDER_OUT, filename))
-        else:
-            shutil.move(filepath, os.path.join(FOLDER_ERR, filename))
+        # Déplacement du fichier original
+        if not DRY_RUN:
+            if error_count == 0:
+                shutil.move(filepath, os.path.join(FOLDER_OUT, filename))
+                logging.info(f"Fichier déplacé vers Traité : {filename}")
+            else:
+                shutil.move(filepath, os.path.join(FOLDER_ERR, filename))
+                logging.info(f"Fichier déplacé vers Erreur : {filename}")
 
     except Exception as e:
         logging.error(f"Erreur globale sur {filename} : {e}")
         try:
-            shutil.move(filepath, os.path.join(FOLDER_ERR, filename))
+            if not DRY_RUN:
+                shutil.move(filepath, os.path.join(FOLDER_ERR, filename))
         except Exception as mv_err:
             logging.error(f"Failed to move file to error folder: {mv_err}")
 
@@ -614,6 +867,8 @@ def process_existing_files():
         logging.info(f"Scan démarrage : {len(existing)} PDF(s) déjà présents dans {FOLDER_IN}")
         for filename in existing:
             filepath = os.path.join(FOLDER_IN, filename)
+            with _processing_lock:
+                _files_seen.add(filepath)
             logging.info(f"Enfilé au démarrage : {filename}")
             _pdf_queue.put(filepath)
     else:
@@ -627,6 +882,8 @@ def start_watcher():
     Tkinter DOIT s'exécuter depuis le thread principal → cette boucle tourne
     dans le thread principal, watchdog dans un thread séparé.
     """
+    if DRY_RUN:
+        logging.info("*** MODE DRY-RUN activé — aucune écriture Excel ni déplacement de fichiers ***")
     logging.info(f"Démarrage surveillance sur {FOLDER_IN}")
     print(f"Watchdog actif. Déposez un PDF dans {FOLDER_IN}")
 
@@ -650,6 +907,10 @@ def start_watcher():
                 process_pdf(filepath)
             except Exception as e:
                 logging.error(f"Erreur non gérée dans process_pdf : {e}\n{traceback.format_exc()}")
+            finally:
+                # Libérer le fichier du Set : permettre un retraitement manuel futur
+                with _processing_lock:
+                    _files_seen.discard(filepath)
     except KeyboardInterrupt:
         observer.stop()
     observer.join()
